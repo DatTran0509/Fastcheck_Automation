@@ -1,0 +1,12 @@
+# build output & deps
+dist
+node_modules
+coverage
+pnpm-lock.yaml
+.turbo
+
+# kit files — never reformat these (context kit, owned outside this build)
+*.md
+docs
+refs
+.claude

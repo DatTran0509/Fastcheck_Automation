@@ -1,0 +1,166 @@
+{
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "register"
+        },
+        "station": {
+          "type": "object",
+          "properties": {
+            "station_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mac_address": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ip_address": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_concurrency": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            }
+          },
+          "required": [
+            "station_id",
+            "name",
+            "agent_version",
+            "max_concurrency"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "type",
+        "station"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "heartbeat"
+        },
+        "station_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "current_load": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ts": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "station_id",
+        "current_load",
+        "ts"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "command_ack"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "station_id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      },
+      "required": [
+        "type",
+        "command_id",
+        "station_id"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "job_result"
+        },
+        "command_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "trace_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "url_status": {
+          "type": "string",
+          "enum": [
+            "LIVE",
+            "DEAD",
+            "INCONCLUSIVE"
+          ]
+        },
+        "profile_health": {
+          "type": "string",
+          "enum": [
+            "OK",
+            "CHALLENGED",
+            "BLOCKED",
+            "THROTTLED"
+          ]
+        },
+        "block_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "response_time_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "type",
+        "command_id",
+        "trace_id",
+        "job_id",
+        "url_status",
+        "profile_health"
+      ],
+      "additionalProperties": false
+    }
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

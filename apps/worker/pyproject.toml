@@ -1,0 +1,32 @@
+[project]
+name = "fastcheck-worker"
+version = "0.0.0"
+description = "FastCheck Client App (máy trạm) — Python 3.12 + DrissionPage (ADR-0006)"
+requires-python = ">=3.12"
+dependencies = [
+  "websockets>=13.0",
+  "pydantic>=2.9",
+  "psutil>=6.0",
+  "python-dotenv>=1.0",
+  "DrissionPage>=4.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3", "mypy>=1.13", "ruff>=0.8", "jsonschema>=4.23", "types-jsonschema>=4.23"]
+
+# Worker KHÔNG là package cài đặt — uv chỉ quản lý venv + deps; chạy qua `python -m fastcheck_worker`.
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
