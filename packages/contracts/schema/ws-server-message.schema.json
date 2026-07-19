@@ -44,6 +44,12 @@
                   "type": "string",
                   "format": "uuid"
                 },
+                "gemlogin_profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "cookie": {
                   "type": "string"
                 }
@@ -69,6 +75,18 @@
                 "profile_id": {
                   "type": "string",
                   "format": "uuid"
+                },
+                "gemlogin_profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cookie": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -87,11 +105,166 @@
                 "profile_id": {
                   "type": "string",
                   "format": "uuid"
+                },
+                "gemlogin_profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
                 "name",
                 "profile_id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "const": "profile.create"
+                },
+                "platform": {
+                  "type": "string",
+                  "enum": [
+                    "TIKTOK",
+                    "FACEBOOK",
+                    "TWITTER",
+                    "YOUTUBE"
+                  ]
+                },
+                "account_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "proxy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "platform"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "const": "profile.update"
+                },
+                "gemlogin_profile_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "account_label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "proxy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "gemlogin_profile_id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "const": "profile.delete"
+                },
+                "gemlogin_profile_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "name",
+                "gemlogin_profile_id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "const": "login.run"
+                },
+                "profile_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "gemlogin_profile_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "platform": {
+                  "type": "string",
+                  "enum": [
+                    "TIKTOK",
+                    "FACEBOOK",
+                    "TWITTER",
+                    "YOUTUBE"
+                  ]
+                },
+                "method": {
+                  "type": "string",
+                  "enum": [
+                    "COOKIE",
+                    "INFO"
+                  ]
+                },
+                "cookie": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "username": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "password": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "otp_secret": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "profile_id",
+                "platform",
+                "method"
               ],
               "additionalProperties": false
             }

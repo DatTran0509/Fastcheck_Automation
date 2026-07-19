@@ -59,7 +59,8 @@ pnpm install                       # cài toàn workspace
 cp .env.example .env               # rồi sinh COOKIE_ENC_KEY thật (xem chú thích trong file)
 docker compose up -d               # Postgres + Redis + RabbitMQ
 pnpm db:migrate                    # tạo 5 bảng + cột dispatch + index
-pnpm dev                           # chạy api + orchestrator + worker (turbo)
+pnpm dev                           # chạy api + orchestrator (turbo)
+pnpm dev:worker                    # chạy worker Python riêng (uv) — mở terminal khác
 ```
 
 ### Kiểm tra nhanh
@@ -77,7 +78,8 @@ curl http://localhost:3002/health
 
 ### Lệnh hay dùng
 ```bash
-pnpm dev            # 3 app ở chế độ dev (tsx watch / nest --watch)
+pnpm dev            # api + orchestrator (turbo, tsx/nest)
+pnpm dev:worker     # worker Python riêng (uv run) — không thuộc turbo
 pnpm db:migrate     # chạy migration (node-pg-migrate)
 pnpm test           # unit test (Vitest): normalizer, crypto round-trip, config fail-fast
 pnpm test:golden    # placeholder ở Phase 0 (golden set thật ở Phase 1)

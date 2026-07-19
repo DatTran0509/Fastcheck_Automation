@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Log in | TikTok</title></head>
+<body>
+  <!-- CA CỐT TỬ: cookie chết → trang guest/login. KHÔNG có avatar → guard fail → -->
+  <!-- INCONCLUSIVE + profile_health=CHALLENGED. TUYỆT ĐỐI KHÔNG DEAD (INV-2). -->
+  <!-- Lưu ý: có cả nội dung video "unavailable"-giả bên dưới để bẫy detector nào bỏ guard: -->
+  <!-- nếu bỏ guard, sẽ đọc phần target và có nguy cơ báo DEAD sai. -->
+  <nav>
+    <a href="/foryou">For You</a>
+    <a href="/login" data-e2e="top-login-button">Log in</a>
+  </nav>
+  <main>
+    <form action="/login" method="post">
+      <h1>Log in to TikTok</h1>
+      <input name="username" placeholder="Email or username">
+      <input name="password" type="password" placeholder="Password">
+      <button type="submit">Log in</button>
+    </form>
+    <div class="teaser">Video currently unavailable to guests</div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,212 @@
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable } from '@nestjs/common';
+import type { Logger } from '@fastcheck/shared';
+import type { OrchestratorEnv } from '@fastcheck/config';
+import { profileRepo, type DB, type Profile } from '@fastcheck/db';
+import { CookieCipher } from '@fastcheck/crypto';
+import type {
+  AccountResponse,
+  BrowserActionRequest,
+  CommandPayload,
+  CommandResult,
+  CreateProfileRequest,
+  RegisterAccountRequest,
+  RunLoginRequest,
+  StationProfileView,
+  StationSummary,
+  UpdateProfileRequest,
+} from '@fastcheck/contracts';
+import { COOKIE_CIPHER, DB_CONN, ENV, LOGGER } from '../tokens.js';
+import { StationRegistryService } from '../station-registry/station-registry.service.js';
+import { PendingCommandsService } from './pending-commands.service.js';
+
+/** Lỗi vận hành bề mặt điều khiển (station offline, timeout...) — map sang HTTP ở controller. */
+export class ControlError extends Error {}
+
+/**
+ * Nghiệp vụ BỀ MẶT ĐIỀU KHIỂN (operator/dashboard → Station): liệt kê station/profile, CRUD profile GemLogin,
+ * mở/tắt browser, GỌI station chạy kịch bản login, và nạp tài khoản thật vào pool. Mọi lệnh gửi xuống station
+ * qua WS rồi CHỜ `command_ack` (INV-14). KHÔNG log cookie/credential (INV-12) — chỉ profile_id/gemlogin_id.
+ */
+@Injectable()
+export class StationControlService {
+  constructor(
+    @Inject(ENV) private readonly env: OrchestratorEnv,
+    @Inject(LOGGER) private readonly logger: Logger,
+    @Inject(DB_CONN) private readonly db: DB,
+    @Inject(COOKIE_CIPHER) private readonly cipher: CookieCipher,
+    private readonly registry: StationRegistryService,
+    private readonly pending: PendingCommandsService,
+  ) {}
+
+  listStations(): StationSummary[] {
+    return this.registry.list();
+  }
+
+  async listProfiles(stationId: string): Promise<StationProfileView[]> {
+    const rows = await profileRepo.listByStation(this.db, stationId);
+    return rows.map((p) => this.toView(p));
+  }
+
+  private toView(p: Profile): StationProfileView {
+    return {
+      profile_id: p.id,
+      platform: p.platform,
+      gemlogin_profile_id: p.gemlogin_profile_id,
+      account_label: p.account_label,
+      status: p.status,
+      health_score: p.health_score,
+      has_cookie: p.cookie_ciphertext != null,
+    };
+  }
+
+  // ── CRUD profile GemLogin (Server → Client, §4) ────────────────────────────────
+  createProfile(stationId: string, req: CreateProfileRequest): Promise<CommandResult> {
+    return this.dispatch(stationId, {
+      name: 'profile.create',
+      platform: req.platform,
+      account_label: req.account_label,
+      proxy: req.proxy,
+    });
+  }
+
+  updateProfile(
+    stationId: string,
+    gemloginProfileId: string,
+    req: UpdateProfileRequest,
+  ): Promise<CommandResult> {
+    return this.dispatch(stationId, {
+      name: 'profile.update',
+      gemlogin_profile_id: gemloginProfileId,
+      account_label: req.account_label,
+      proxy: req.proxy,
+    });
+  }
+
+  deleteProfile(stationId: string, gemloginProfileId: string): Promise<CommandResult> {
+    return this.dispatch(stationId, {
+      name: 'profile.delete',
+      gemlogin_profile_id: gemloginProfileId,
+    });
+  }
+
+  // ── Mở / tắt browser GemLogin ─────────────────────────────────────────────────
+  async openBrowser(stationId: string, req: BrowserActionRequest): Promise<CommandResult> {
+    // Nếu chỉ định profile nội bộ có cookie đã lưu → giải mã để inject TRƯỚC điều hướng (INV-2/INV-12).
+    const cookie = req.profile_id ? await this.loadCookie(req.profile_id) : undefined;
+    return this.dispatch(stationId, {
+      name: 'browser.open',
+      profile_id: req.profile_id ?? randomUUID(),
+      gemlogin_profile_id: req.gemlogin_profile_id,
+      cookie,
+    });
+  }
+
+  closeBrowser(stationId: string, req: BrowserActionRequest): Promise<CommandResult> {
+    return this.dispatch(stationId, {
+      name: 'browser.close',
+      profile_id: req.profile_id ?? randomUUID(),
+      gemlogin_profile_id: req.gemlogin_profile_id,
+    });
+  }
+
+  // ── Server GỌI station chạy kịch bản login (§7 — kịch bản lưu phía client) ──────
+  async runLogin(stationId: string, req: RunLoginRequest): Promise<CommandResult> {
+    // method COOKIE: dùng cookie truyền vào, hoặc cookie đã lưu theo profile_id (giải mã — INV-12).
+    let cookie = req.cookie;
+    if (req.method === 'COOKIE' && !cookie && req.profile_id) {
+      cookie = await this.loadCookie(req.profile_id);
+    }
+    return this.dispatch(stationId, {
+      name: 'login.run',
+      profile_id: req.profile_id ?? randomUUID(),
+      gemlogin_profile_id: req.gemlogin_profile_id,
+      platform: req.platform,
+      method: req.method,
+      cookie,
+      username: req.username,
+      password: req.password,
+      otp_secret: req.otp_secret,
+    });
+  }
+
+  // ── Nạp tài khoản thật vào pool để POST /check dùng được ───────────────────────
+  async registerAccount(req: RegisterAccountRequest): Promise<AccountResponse> {
+    // VERIFY từ đầu (mặc định bật): mở profile + kiểm đã đăng nhập ĐÚNG platform chưa TRƯỚC khi nạp — chống
+    // nạp sai (vd profile FB nhưng chọn YOUTUBE) → sau này cooldown loạn. Cần station online. verify=false để bỏ.
+    if (req.verify !== false) {
+      if (!req.station_id) {
+        throw new ControlError('verify cần station_id (profile nằm ở station nào) — truyền station_id hoặc verify=false');
+      }
+      const v = await this.runLogin(req.station_id, {
+        gemlogin_profile_id: req.gemlogin_profile_id,
+        platform: req.platform,
+        method: 'COOKIE', // dùng cookie truyền vào, hoặc session sẵn trong profile (không cookie → kiểm session hiện tại)
+        cookie: req.cookie,
+      });
+      if (!v.ok) {
+        throw new ControlError(
+          `profile ${req.gemlogin_profile_id} CHƯA đăng nhập ${req.platform} (verify: ${v.detail}) — KHÔNG nạp vào pool. ` +
+            `Kiểm lại: đúng profile? đúng platform? cookie/đăng nhập còn sống? (bỏ qua verify: verify=false)`,
+        );
+      }
+    }
+    // Cookie mã hoá AES-GCM một-nơi-duy-nhất (packages/crypto — INV-12). Không log giá trị.
+    const enc = req.cookie ? this.cipher.encrypt(req.cookie) : null;
+    const profile = await profileRepo.registerAccount(this.db, {
+      platform: req.platform,
+      gemlogin_profile_id: req.gemlogin_profile_id,
+      stationId: req.station_id ?? null,
+      account_label: req.account_label ?? null,
+      cookieCiphertext: enc?.ciphertext ?? null,
+      cookieKeyId: enc?.keyId ?? null,
+    });
+    this.logger.info(
+      { profile_id: profile.id, platform: profile.platform, has_cookie: enc != null },
+      'nạp tài khoản vào pool (cookie mã hoá — INV-12)',
+    );
+    return {
+      profile_id: profile.id,
+      // registerAccount vừa GÁN nền tảng → luôn có (fallback req.platform cho typing, không bao giờ null ở đây).
+      platform: profile.platform ?? req.platform,
+      gemlogin_profile_id: profile.gemlogin_profile_id ?? req.gemlogin_profile_id,
+      status: profile.status,
+      has_cookie: profile.cookie_ciphertext != null,
+    };
+  }
+
+  private async loadCookie(profileId: string): Promise<string | undefined> {
+    const p = await profileRepo.getProfile(this.db, profileId);
+    if (!p?.cookie_ciphertext || !p.cookie_key_id) return undefined;
+    return this.cipher.decrypt({
+      ciphertext: Buffer.from(p.cookie_ciphertext),
+      keyId: p.cookie_key_id,
+    });
+  }
+
+  /** Gửi một lệnh xuống station rồi CHỜ command_ack (INV-14). Ném ControlError nếu station không online. */
+  private async dispatch(stationId: string, command: CommandPayload): Promise<CommandResult> {
+    const commandId = randomUUID();
+    const sent = this.registry.send(stationId, {
+      type: 'command',
+      command_id: commandId,
+      command,
+    });
+    if (!sent) {
+      throw new ControlError(`station ${stationId} không online (không gửi được lệnh ${command.name})`);
+    }
+    // Đăng ký chờ NGAY sau send (cùng tick, không await xen giữa) → không race với ack đến sau round-trip.
+    const ack = await this.pending.waitFor(commandId, stationId, this.env.COMMAND_ACK_TIMEOUT_MS);
+    this.logger.info(
+      { command_id: commandId, station_id: stationId, name: command.name, ok: ack.ok },
+      'lệnh điều khiển đã có phản hồi (command_ack)',
+    );
+    return {
+      ok: ack.ok,
+      command_id: commandId,
+      station_id: stationId,
+      detail: ack.detail ?? null,
+      profile_id: ack.profile_id ?? null,
+    };
+  }
+}

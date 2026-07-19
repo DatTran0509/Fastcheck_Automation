@@ -71,6 +71,18 @@
         },
         "ts": {
           "type": "string"
+        },
+        "ram_mb": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "cpu_percent": {
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
       "required": [
@@ -95,12 +107,28 @@
         "station_id": {
           "type": "string",
           "format": "uuid"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "type",
         "command_id",
-        "station_id"
+        "station_id",
+        "ok"
       ],
       "additionalProperties": false
     },
@@ -158,6 +186,164 @@
         "job_id",
         "url_status",
         "profile_health"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "profile_sync"
+        },
+        "station_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "gemlogin_profile_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "platform": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "TIKTOK",
+                      "FACEBOOK",
+                      "TWITTER",
+                      "YOUTUBE"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "gem_status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "gemlogin_profile_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "all_gemlogin_ids": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "station_id",
+        "profiles"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "cookie_refresh"
+        },
+        "station_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "profile_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "gemlogin_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cookie": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "type",
+        "station_id",
+        "profile_id",
+        "cookie"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "job_progress"
+        },
+        "station_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "trace_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "job_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "step": {
+          "type": "string",
+          "enum": [
+            "OPEN_BROWSER",
+            "LOGIN",
+            "DETECT",
+            "DONE"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ts": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "station_id",
+        "trace_id",
+        "job_id",
+        "step",
+        "ts"
       ],
       "additionalProperties": false
     }

@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Security check</title></head>
+<body>
+  <!-- Bị siết: captcha/turnstile. → INCONCLUSIVE + profile_health=BLOCKED (KHÔNG DEAD). -->
+  <!-- Block phải bắt TRƯỚC guard: avatar cũng vắng ở trang captcha, nhưng đây là BLOCKED -->
+  <!-- (profile bị siết) chứ không phải CHALLENGED (cookie chết) — phân biệt để chẩn đoán đúng. -->
+  <main>
+    <div id="captcha-verify-container" class="captcha_verify_container">
+      <h2>Security check</h2>
+      <p>Please verify to continue</p>
+      <iframe src="https://challenges.cloudflare.com/turnstile/v0/api.js"></iframe>
+    </div>
+  </main>
+</body>
+</html>

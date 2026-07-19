@@ -1,32 +1,77 @@
-"""Mirror pydantic của giao thức WS. Nguồn sự thật là packages/contracts (zod) — ADR-0006.
+"""Contract WS/queue cho worker — model pydantic SINH TỪ JSON Schema của packages/contracts.
 
-Đổi contract: sửa zod trước, cập nhật các model ở đây theo.
+Nguồn sự thật là zod (packages/contracts) → JSON Schema (packages/contracts/schema) → model pydantic
+(_contracts_gen.py, sinh bằng `pnpm worker:gen`). ĐỪNG sửa tay _contracts_gen.py. (ADR-0006, review P1)
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Union
 
-from pydantic import BaseModel
+from pydantic import Field, TypeAdapter
+
+from ._contracts_gen import (
+    BrowserCloseCommand,
+    BrowserOpenCommand,
+    CheckJobMessage,
+    CommandAckMessage,
+    CookieRefreshMessage,
+    HeartbeatMessage,
+    JobProgressMessage,
+    JobResultMessage,
+    LoginRunCommand,
+    Platform,
+    ProfileCreateCommand,
+    ProfileDeleteCommand,
+    ProfileHealth,
+    ProfileSyncMessage,
+    ProfileUpdateCommand,
+    RegisteredMessage,
+    RegisterMessage,
+    RunCommand,
+    ServerCommand,
+    StationInfo,
+    StationProfile,
+    Step,
+    UrlStatus,
+)
+
+# Alias tên rõ nghĩa cho enum bước tiến trình (datamodel-codegen đặt tên `Step`).
+JobProgressStep = Step
+
+__all__ = [
+    "BrowserCloseCommand",
+    "BrowserOpenCommand",
+    "CheckJobMessage",
+    "CommandAckMessage",
+    "CookieRefreshMessage",
+    "HeartbeatMessage",
+    "JobProgressMessage",
+    "JobProgressStep",
+    "JobResultMessage",
+    "LoginRunCommand",
+    "Platform",
+    "ProfileCreateCommand",
+    "ProfileDeleteCommand",
+    "ProfileHealth",
+    "ProfileSyncMessage",
+    "ProfileUpdateCommand",
+    "RegisterMessage",
+    "RegisteredMessage",
+    "RunCommand",
+    "ServerCommand",
+    "StationInfo",
+    "StationProfile",
+    "Step",
+    "UrlStatus",
+    "parse_server_message",
+]
+
+# Union lệnh Server→Client, phân biệt bằng field `type`.
+ServerMessage = Annotated[Union[RegisteredMessage, ServerCommand], Field(discriminator="type")]
+_server_adapter: TypeAdapter[RegisteredMessage | ServerCommand] = TypeAdapter(ServerMessage)
 
 
-class StationInfo(BaseModel):
-    station_id: str
-    name: str
-    mac_address: str | None = None
-    ip_address: str | None = None
-    agent_version: str
-    max_concurrency: int
-
-
-class RegisterMessage(BaseModel):
-    type: Literal["register"] = "register"
-    # Token KHÔNG nằm ở message này — gửi qua header Authorization của handshake (INV-12).
-    station: StationInfo
-
-
-class HeartbeatMessage(BaseModel):
-    type: Literal["heartbeat"] = "heartbeat"
-    station_id: str
-    current_load: int
-    ts: str
+def parse_server_message(raw: str | bytes) -> RegisteredMessage | ServerCommand:
+    """Validate message Server→Client bằng model sinh từ JSON Schema; ném ValidationError nếu sai shape."""
+    return _server_adapter.validate_json(raw)

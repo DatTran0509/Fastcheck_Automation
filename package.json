@@ -10,14 +10,21 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "dev:worker": "uv --directory apps/worker run python -m fastcheck_worker",
     "db:migrate": "pnpm --filter @fastcheck/db run migrate",
     "db:migrate:down": "pnpm --filter @fastcheck/db run migrate:down",
     "test": "turbo run test",
-    "test:golden": "echo \"[test:golden] placeholder — golden set is introduced in Phase 1 (see docs/roadmap.md)\"",
+    "test:golden": "uv --directory apps/worker run pytest tests/test_golden_tiktok.py tests/test_golden_platforms.py tests/test_vote_engine.py -q",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "contracts:schema": "pnpm --filter @fastcheck/contracts gen:schema",
+    "worker:gen": "uv --directory apps/worker run datamodel-codegen --input ../../packages/contracts/schema/messages.schema.json --input-file-type jsonschema --output fastcheck_worker/_contracts_gen.py --output-model-type pydantic_v2.BaseModel --target-python-version 3.12 --use-standard-collections --use-annotated",
+    "worker:test": "uv --directory apps/worker run pytest -q",
+    "worker:lint": "uv --directory apps/worker run ruff check .",
+    "worker:typecheck": "uv --directory apps/worker run mypy fastcheck_worker",
+    "worker:check": "pnpm worker:lint && pnpm worker:typecheck && pnpm worker:test"
   },
   "devDependencies": {
     "@types/node": "^20.17.10",

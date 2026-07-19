@@ -28,13 +28,47 @@ export const heartbeatMessageSchema = z.object({
   station_id: z.string().uuid(),
   current_load: z.number().int().nonnegative(),
   ts: z.string(),
+  // Tài nguyên máy trạm để phơi metric RAM/CPU worker (§10.4). .nullish() cho tương thích ngược (ADR-0006).
+  ram_mb: z.number().nullish(),
+  cpu_percent: z.number().nullish(),
 });
 
 export const commandAckMessageSchema = z.object({
   type: z.literal('command_ack'),
   command_id: z.string().uuid(),
   station_id: z.string().uuid(),
+  // Kết quả xử lý lệnh (browser.open/close, profile.*). ok=false + detail khi lỗi (không nuốt lỗi).
+  ok: z.boolean(),
+  detail: z.string().nullish(),
+  // Trả về khi lệnh tạo/đụng tới một profile (vd id profile GemLogin mới). KHÔNG chứa cookie/CDP thô (INV-12).
+  profile_id: z.string().nullish(),
 });
+export type CommandAckMessage = z.infer<typeof commandAckMessageSchema>;
+
+// ── Đồng bộ danh sách profile GemLogin (Station → Server, §3 station-management-design) ──────
+// Client hỏi API local GemLogin lấy danh sách profile rồi đẩy lên; Server cập nhật bảng `profiles`
+// (gắn assigned_station_id) để biết profile nào ở máy nào. KHÔNG gửi cookie/credential (INV-12).
+export const stationProfileSchema = z.object({
+  gemlogin_profile_id: z.string().min(1),
+  name: z.string().nullish(),
+  // NULL = profile GemLogin chưa gán nền tảng (không nhãn `fastcheck-platform=` ở note). Vẫn mirror về server
+  // để "Xem profile" khớp GemLogin (§3); server giữ platform NULL → không dispatch được tới khi gán.
+  platform: z.nativeEnum(Platform).nullish(),
+  // Trạng thái phía GemLogin (open/closed) — thông tin, KHÔNG phải profile_status của pool (INV-3).
+  gem_status: z.string().nullish(),
+});
+export type StationProfile = z.infer<typeof stationProfileSchema>;
+
+export const profileSyncMessageSchema = z.object({
+  type: z.literal('profile_sync'),
+  station_id: z.string().uuid(),
+  profiles: z.array(stationProfileSchema),
+  // TẤT CẢ id profile hiện có trong GemLogin (kể cả cái không map được platform) — để server ĐỒNG BỘ XOÁ:
+  // profile trong DB (của station) mà id KHÔNG nằm trong đây = đã bị xoá bên GemLogin → gỡ khỏi pool. .nullish()
+  // cho tương thích ngược (client cũ không gửi → không prune). Chỉ gửi khi list_profiles THÀNH CÔNG (tránh wipe oan).
+  all_gemlogin_ids: z.array(z.string()).nullish(),
+});
+export type ProfileSyncMessage = z.infer<typeof profileSyncMessageSchema>;
 
 export const jobResultMessageSchema = z.object({
   type: z.literal('job_result'),
@@ -47,12 +81,51 @@ export const jobResultMessageSchema = z.object({
   block_reason: z.string().nullable().optional(),
   response_time_ms: z.number().int().nonnegative().optional(),
 });
+export type JobResultMessage = z.infer<typeof jobResultMessageSchema>;
+
+// ── Refresh cookie sau phiên đăng nhập thành công (Station → Server, spec §4.4) ──────────────
+// Worker thu cookie MỚI (đã xoay) từ browser sau phiên login OK → gửi lên để orchestrator MÃ HOÁ
+// (packages/crypto) rồi cập nhật profiles.cookie_ciphertext. Worker KHÔNG tự mã hoá (ADR-0006).
+// Cookie đi qua kênh WSS (đã mã hoá đường truyền); KHÔNG log giá trị (INV-12).
+export const cookieRefreshMessageSchema = z.object({
+  type: z.literal('cookie_refresh'),
+  station_id: z.string().uuid(),
+  profile_id: z.string().uuid(),
+  gemlogin_profile_id: z.string().nullish(),
+  cookie: z.string().min(1),
+});
+export type CookieRefreshMessage = z.infer<typeof cookieRefreshMessageSchema>;
+
+// ── Stream tiến trình job đang chạy (Station → Server, §8 — điểm cộng dashboard) ──────────────
+// Worker phát bước đang chạy theo trace_id để dashboard hiển thị realtime: mở browser → login →
+// detect → xong. KHÔNG chứa cookie/credential (INV-12) — chỉ nhãn bước + chi tiết an toàn.
+export const jobProgressStepSchema = z.enum([
+  'OPEN_BROWSER',
+  'LOGIN',
+  'DETECT',
+  'DONE',
+]);
+export type JobProgressStep = z.infer<typeof jobProgressStepSchema>;
+
+export const jobProgressMessageSchema = z.object({
+  type: z.literal('job_progress'),
+  station_id: z.string().uuid(),
+  trace_id: z.string().uuid(),
+  job_id: z.string().uuid(),
+  step: jobProgressStepSchema,
+  detail: z.string().nullish(),
+  ts: z.string(),
+});
+export type JobProgressMessage = z.infer<typeof jobProgressMessageSchema>;
 
 export const wsClientMessageSchema = z.discriminatedUnion('type', [
   registerMessageSchema,
   heartbeatMessageSchema,
   commandAckMessageSchema,
   jobResultMessageSchema,
+  profileSyncMessageSchema,
+  cookieRefreshMessageSchema,
+  jobProgressMessageSchema,
 ]);
 export type WsClientMessage = z.infer<typeof wsClientMessageSchema>;
 
@@ -64,6 +137,8 @@ export const runCommandSchema = z.object({
   target_url: z.string(),
   platform: z.nativeEnum(Platform),
   profile_id: z.string().uuid(),
+  // id profile phía GemLogin (để real mode mở đúng browser). .nullish(): trống ở fake mode (ADR-0006).
+  gemlogin_profile_id: z.string().nullish(),
   // cookie đã giải mã (orchestrator giải mã qua packages/crypto) — gửi qua kênh WSS (ADR-0006).
   cookie: z.string(),
 });
@@ -71,17 +146,65 @@ export const runCommandSchema = z.object({
 export const browserOpenCommandSchema = z.object({
   name: z.literal('browser.open'),
   profile_id: z.string().uuid(),
+  // gemlogin_profile_id để mở đúng profile phía GemLogin (nếu khác id nội bộ). Cookie đi kèm để inject
+  // TRƯỚC điều hướng (INV-2); orchestrator giải mã cookie (INV-12). Trống ở fake mode.
+  gemlogin_profile_id: z.string().nullish(),
+  cookie: z.string().nullish(),
 });
 
 export const browserCloseCommandSchema = z.object({
   name: z.literal('browser.close'),
   profile_id: z.string().uuid(),
+  gemlogin_profile_id: z.string().nullish(),
+});
+
+// ── Lệnh CRUD profile GemLogin (Server → Client, §4). profile_id là id phía GemLogin (không phải uuid nội bộ) ──
+export const profileCreateCommandSchema = z.object({
+  name: z.literal('profile.create'),
+  platform: z.nativeEnum(Platform),
+  account_label: z.string().nullish(),
+  proxy: z.string().nullish(),
+});
+
+export const profileUpdateCommandSchema = z.object({
+  name: z.literal('profile.update'),
+  gemlogin_profile_id: z.string().min(1),
+  account_label: z.string().nullish(),
+  proxy: z.string().nullish(),
+});
+
+export const profileDeleteCommandSchema = z.object({
+  name: z.literal('profile.delete'),
+  gemlogin_profile_id: z.string().min(1),
+});
+
+// ── Lệnh chạy KỊCH BẢN ĐĂNG NHẬP (Server → Client, §7 / spec §4.4) ──────────────
+// Server *gọi* station chạy script login; kịch bản LƯU PHÍA CLIENT (đúng yêu cầu Excel). Client mở browser
+// GemLogin → chạy login (cookie ×4 / info TT&X) → trả `command_ack`. Credential đi qua WSS (mã hoá đường
+// truyền), KHÔNG log giá trị (INV-12). method COOKIE dùng `cookie`; INFO dùng `username`/`password`(/`otp_secret`).
+export const loginMethodSchema = z.enum(['COOKIE', 'INFO']);
+export type LoginMethodDto = z.infer<typeof loginMethodSchema>;
+
+export const loginRunCommandSchema = z.object({
+  name: z.literal('login.run'),
+  profile_id: z.string().uuid(),
+  gemlogin_profile_id: z.string().nullish(),
+  platform: z.nativeEnum(Platform),
+  method: loginMethodSchema,
+  cookie: z.string().nullish(),
+  username: z.string().nullish(),
+  password: z.string().nullish(),
+  otp_secret: z.string().nullish(),
 });
 
 export const commandPayloadSchema = z.discriminatedUnion('name', [
   runCommandSchema,
   browserOpenCommandSchema,
   browserCloseCommandSchema,
+  profileCreateCommandSchema,
+  profileUpdateCommandSchema,
+  profileDeleteCommandSchema,
+  loginRunCommandSchema,
 ]);
 export type CommandPayload = z.infer<typeof commandPayloadSchema>;
 
@@ -90,6 +213,7 @@ export const serverCommandSchema = z.object({
   command_id: z.string().uuid(), // idempotent (INV-14)
   command: commandPayloadSchema,
 });
+export type ServerCommand = z.infer<typeof serverCommandSchema>;
 
 export const registeredMessageSchema = z.object({
   type: z.literal('registered'),

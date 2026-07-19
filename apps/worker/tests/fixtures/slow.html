@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>TikTok · @creator</title></head>
+<body>
+  <!-- Đã đăng nhập: avatar/menu người dùng ở nav (guard INV-2 phải pass) -->
+  <nav>
+    <a href="/foryou">For You</a>
+    <span data-e2e="profile-icon" aria-label="Profile"><img class="avatar" alt="me"></span>
+  </nav>
+  <!-- Target LIVE: player video render + nội dung hiển thị -->
+  <main>
+    <div data-e2e="video-detail">
+      <div data-e2e="browse-video">
+        <video src="blob:https://www.tiktok.com/abc" controls></video>
+      </div>
+      <h1 data-e2e="browse-video-desc">A perfectly cromulent video #fyp</h1>
+    </div>
+  </main>
+</body>
+</html>

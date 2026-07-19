@@ -63,8 +63,8 @@ fastcheck/
     │       └── ws/                 # WS gateway (RUN, CRUD profile, mở/tắt browser)
     ├── worker/                     # Client App — Python 3.12 + DrissionPage (uv), native Windows, KHÔNG là pnpm package
     │   ├── CLAUDE.md
-    │   ├── pyproject.toml          # uv/deps: drissionpage, pydantic, websockets, psutil, pytest
-    │   ├── package.json            # wrapper mỏng: dev/build/typecheck/test gọi `uv run ...` để Turbo/pnpm dev điều phối
+    │   ├── pyproject.toml          # uv/deps + tool config; worker KHÔNG có package.json → không thuộc turbo, chạy riêng qua `pnpm dev:worker` (uv)
+    │   ├── _contracts_gen.py        # (trong src) model pydantic SINH từ packages/contracts/schema (pnpm worker:gen) — không sửa tay
     │   └── src/fastcheck_worker/
     │       ├── ws_client/          # kết nối, đăng ký, heartbeat, reconnect, idempotency (command_id)
     │       ├── browser/            # DrissionPage adapter (real|fake), cookie inject, attach CDP GemLogin
@@ -94,7 +94,7 @@ fastcheck/
 ## Vì sao monorepo
 
 - Type/contract chia sẻ an toàn qua workspace, không publish package.
-- Một lệnh `pnpm dev` chạy cả hệ; Turborepo cache build/test.
+- `pnpm dev` chạy các app TS (api, orchestrator, dashboard) qua Turborepo; worker Python chạy riêng bằng `pnpm dev:worker` (uv). Turborepo cache build/test.
 - CI chạy golden set cho detector như một job riêng — bắt selector vỡ trước khi merge.
 
 ## Nested CLAUDE.md

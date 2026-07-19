@@ -6,26 +6,42 @@ requires-python = ">=3.12"
 dependencies = [
   "websockets>=13.0",
   "pydantic>=2.9",
+  "pydantic-settings>=2.5",
   "psutil>=6.0",
   "python-dotenv>=1.0",
   "DrissionPage>=4.1",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3", "mypy>=1.13", "ruff>=0.8", "jsonschema>=4.23", "types-jsonschema>=4.23"]
+dev = [
+  "pytest>=8.3",
+  "mypy>=1.13",
+  "ruff>=0.8",
+  "jsonschema>=4.23",
+  "types-jsonschema>=4.23",
+  "datamodel-code-generator>=0.26",
+]
 
-# Worker KHÔNG là package cài đặt — uv chỉ quản lý venv + deps; chạy qua `python -m fastcheck_worker`.
+# Worker KHÔNG là package cài đặt & KHÔNG là workspace của pnpm/turbo (ADR-0006):
+# uv quản venv + deps; chạy qua `python -m fastcheck_worker` / `uv run`. Root có script dev:worker.
 [tool.uv]
 package = false
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# File pydantic sinh tự động từ JSON Schema của contracts — không lint.
+extend-exclude = ["fastcheck_worker/_contracts_gen.py"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
+
+# Không áp strict lên code sinh tự động.
+[[tool.mypy.overrides]]
+module = "fastcheck_worker._contracts_gen"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

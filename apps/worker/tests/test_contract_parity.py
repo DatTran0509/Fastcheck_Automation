@@ -12,7 +12,7 @@ from typing import Any
 import jsonschema
 
 from fastcheck_worker.contracts import HeartbeatMessage, RegisterMessage, StationInfo
-
+from uuid import UUID
 
 def _schema_dir() -> Path:
     here = Path(__file__).resolve()
@@ -30,8 +30,9 @@ def _load(name: str) -> dict[str, Any]:
 def test_register_conforms_to_zod_schema() -> None:
     schema = _load("ws-client-message.schema.json")
     message = RegisterMessage(
+        type="register",
         station=StationInfo(
-            station_id="00000000-0000-4000-8000-000000000001",
+            station_id=UUID("00000000-0000-4000-8000-000000000001"),
             name="dev-station",
             agent_version="0.0.1",
             max_concurrency=4,
@@ -43,7 +44,8 @@ def test_register_conforms_to_zod_schema() -> None:
 def test_heartbeat_conforms_to_zod_schema() -> None:
     schema = _load("ws-client-message.schema.json")
     message = HeartbeatMessage(
-        station_id="00000000-0000-4000-8000-000000000001",
+        type="heartbeat",
+        station_id=UUID("00000000-0000-4000-8000-000000000001"),
         current_load=0,
         ts="2026-07-17T00:00:00+00:00",
     )

@@ -28,6 +28,18 @@ export type CheckCached = z.infer<typeof checkCachedSchema>;
 export const checkResponseSchema = z.union([checkAcceptedSchema, checkCachedSchema]);
 export type CheckResponse = z.infer<typeof checkResponseSchema>;
 
+/**
+ * POST /check — 503 khi circuit breaker của platform đang MỞ (§10.6): tỷ lệ BLOCKED/lỗi vượt ngưỡng
+ * trong cửa sổ trượt → chặn tạm để bảo vệ pool. Client thử lại sau `retry_after_seconds`.
+ */
+export const checkCircuitOpenSchema = z.object({
+  error: z.literal('circuit_open'),
+  platform: z.nativeEnum(Platform),
+  message: z.string(),
+  retry_after_seconds: z.number().int().nonnegative(),
+});
+export type CheckCircuitOpen = z.infer<typeof checkCircuitOpenSchema>;
+
 /** GET /check/:trace_id — trạng thái vòng đời job (nguồn sự thật: bảng check_jobs, INV-4). */
 export const checkStatusResponseSchema = z.object({
   trace_id: z.string().uuid(),

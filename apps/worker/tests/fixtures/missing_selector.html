@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>TikTok · @creator</title></head>
+<body>
+  <!-- CA CỐT TỬ chống selector vỡ: TikTok đổi class/data-e2e → selector LIVE không khớp nữa. -->
+  <!-- HTTP 200, đã đăng nhập, KHÔNG có dấu hiệu chết. "Không thấy tín hiệu LIVE" ≠ DEAD → -->
+  <!-- phải ra INCONCLUSIVE (INV-1/INV-8), KHÔNG được DEAD. Golden set tồn tại để bắt đúng ca này. -->
+  <nav>
+    <a href="/foryou">For You</a>
+    <span data-e2e="profile-icon" aria-label="Profile"><img class="avatar" alt="me"></span>
+  </nav>
+  <main>
+    <!-- Class/attr đã đổi so với bảng tín hiệu: không còn data-e2e=browse-video / thẻ <video> -->
+    <div class="xz9f-newlayout-2026">
+      <div class="xz9f-media-frame">
+        <canvas class="xz9f-renderer"></canvas>
+      </div>
+      <h1 class="xz9f-title">Some caption text that says nothing about liveness</h1>
+    </div>
+  </main>
+</body>
+</html>

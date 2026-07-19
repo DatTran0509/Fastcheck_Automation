@@ -86,11 +86,68 @@ export const apiEnvSchema = z.object({
   RATE_LIMIT_PER_MINUTE: positiveInt().default(120),
 });
 
+const nonNegNumber = () => z.coerce.number().nonnegative();
+
 export const orchestratorEnvSchema = z.object({
   ORCHESTRATOR_HOST: z.string().default('0.0.0.0'),
   ORCHESTRATOR_PORT: port().default(3002),
   WS_AUTH_TOKEN: z.string().min(1),
   ORCHESTRATOR_PREFETCH: positiveInt().default(20),
+  // Orchestrator set cache kết quả sau khi có job_result (TTL LIVE < DEAD; không cache INCONCLUSIVE).
+  RESULT_CACHE_TTL_LIVE_SECONDS: positiveInt().default(300),
+  RESULT_CACHE_TTL_DEAD_SECONDS: positiveInt().default(900),
+
+  // ── Phase 3: auto-switch / profile lifecycle ──────────────────────────────
+  // Số lần re-queue tối đa trước khi vào DLQ (chống switch vô hạn — skill §auto-switch).
+  ORCHESTRATOR_MAX_RETRIES: z.coerce.number().int().nonnegative().default(3),
+  // Backoff re-queue: expiration = base * 2^retry_count (ms), cap RETRY_BACKOFF_MAX_MS.
+  RETRY_BACKOFF_BASE_MS: positiveInt().default(2000),
+  RETRY_BACKOFF_MAX_MS: positiveInt().default(60000),
+  // health_score: trừ khi challenge/block, cộng khi thành công (cap 100).
+  PROFILE_HEALTH_PENALTY: positiveInt().default(20),
+  PROFILE_HEALTH_BUMP: positiveInt().default(5),
+  // consecutive_fails >= ngưỡng → DEAD (loại pool); ngược lại COOLDOWN.
+  PROFILE_DEAD_THRESHOLD: positiveInt().default(3),
+  PROFILE_COOLDOWN_SECONDS: positiveInt().default(300),
+  // Cooldown NGẮN khi lỗi HẠ TẦNG (THROTTLED: browser mở không được / GemLogin kẹt) — nghỉ để GemLogin hồi,
+  // cắt vòng hammer, KHÔNG phạt health/không DEAD (tài khoản vẫn tốt). Ngắn hơn PROFILE_COOLDOWN_SECONDS.
+  PROFILE_THROTTLE_COOLDOWN_SECONDS: positiveInt().default(30),
+  // Cảnh báo khi số profile khả dụng của platform <= ngưỡng (pool thấp — §4.6).
+  PROFILE_POOL_LOW_WATERMARK: z.coerce.number().int().nonnegative().default(2),
+  PROXY_BAN_THRESHOLD: positiveInt().default(5),
+  // Cron dọn lease (spec §6.4).
+  LEASE_REAP_INTERVAL_MS: positiveInt().default(60000),
+  LEASE_MINUTES: positiveInt().default(5),
+  // ── Phát hiện station chết & thu hồi job (INV-15, Phase 4) ─────────────────
+  // Station ping ~10s. Quá HEARTBEAT_TIMEOUT_MS không ping → OFFLINE + thu hồi job RUNNING (re-queue).
+  HEARTBEAT_TIMEOUT_MS: positiveInt().default(30000),
+  // Chu kỳ cron quét station quá hạn heartbeat.
+  STATION_MONITOR_INTERVAL_MS: positiveInt().default(5000),
+  // ── Bề mặt điều khiển (REST/Swagger) — chờ command_ack đồng bộ ─────────────
+  // Lệnh mở browser lần đầu có thể tải Chromium (chậm) → timeout rộng để không cắt ngang oan.
+  COMMAND_ACK_TIMEOUT_MS: positiveInt().default(60000),
+  // ── Rate-limit token bucket (§4.1d, §8.1) — mặc định rộng để đường thường trong suốt ──
+  RATE_LIMIT_PROFILE_CAPACITY: positiveInt().default(20),
+  RATE_LIMIT_PROFILE_REFILL_PER_SEC: nonNegNumber().default(5),
+  RATE_LIMIT_PLATFORM_CAPACITY: positiveInt().default(200),
+  RATE_LIMIT_PLATFORM_REFILL_PER_SEC: nonNegNumber().default(100),
+
+  // ── Circuit breaker theo platform (§10.6, Phase 5) ─────────────────────────
+  // Cửa sổ trượt tính tỷ lệ BLOCKED/lỗi; cần đủ MIN_SAMPLES trước khi được phép mở (tránh nhiễu).
+  CIRCUIT_WINDOW_SECONDS: positiveInt().default(60),
+  CIRCUIT_MIN_SAMPLES: positiveInt().default(5),
+  // Tỷ lệ BLOCKED/lỗi trong cửa sổ >= ngưỡng → MỞ circuit (0..1).
+  CIRCUIT_BLOCK_THRESHOLD: z.coerce.number().min(0).max(1).default(0.5),
+  // Thời gian MỞ (cũng là retry_after cho client). Hết → HALF_OPEN thăm dò.
+  CIRCUIT_COOLDOWN_SECONDS: positiveInt().default(30),
+
+  // ── Observability / dashboard (Phase 5) ────────────────────────────────────
+  // Chu kỳ cập nhật gauge độ sâu queue vào /metrics.
+  QUEUE_METRICS_INTERVAL_MS: positiveInt().default(5000),
+  // Chu kỳ đẩy snapshot dashboard qua SSE.
+  DASHBOARD_STREAM_INTERVAL_MS: positiveInt().default(2000),
+  // Cửa sổ (phút) tính tỷ lệ LIVE/DEAD/INCONCLUSIVE từ check_logs cho dashboard/metrics.
+  DASHBOARD_RATIO_WINDOW_MINUTES: positiveInt().default(60),
 });
 
 // ── Schema tổng hợp theo app ──────────────────────────────────────────────────

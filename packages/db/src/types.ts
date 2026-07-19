@@ -35,8 +35,11 @@ export interface ProxiesTable {
 
 export interface ProfilesTable {
   id: Generated<string>;
-  platform: Platform;
+  // NULL = profile GemLogin đã mirror về nhưng CHƯA gán nền tảng (chưa "Nạp tài khoản"/chưa nhãn note).
+  // Hiển thị trong "Xem profile", nhưng claimProfile lọc `platform = X` nên không bao giờ được cấp job (§3).
+  platform: Platform | null;
   account_label: string | null;
+  gemlogin_profile_id: string | null; // id phía GemLogin (§3 sync) — khác id UUID nội bộ
   cookie_ciphertext: Buffer | null;
   cookie_key_id: string | null;
   proxy_id: string | null;

@@ -112,11 +112,11 @@ Rotating proxy chỉ dùng ở tầng "cấp IP mới cho profile mới", không
 
 ## INV-10 — Backpressure phải nhất quán từ queue xuống browser
 
-**Luật:** Số process browser đồng thời ở worker = `max_concurrency` của máy = **đồng bộ với prefetch (`basic.qos`)** của RabbitMQ. Dùng manual ack: chỉ ack khi job hoàn tất. Worker Python thực thi bằng **process pool** (1 browser = 1 process); pool size = max_concurrency = prefetch.
+**Luật:** Số browser đồng thời ở worker = `max_concurrency` của máy = **đồng bộ với prefetch (`basic.qos`)** của RabbitMQ. Dùng manual ack: chỉ ack khi job hoàn tất. Worker Python thực thi bằng **bounded thread pool** size = max_concurrency = prefetch (ADR-0007).
 
 **Vì sao:** Nếu prefetch cao hơn số browser máy chạy nổi, worker nhận job vượt khả năng → sập RAM. Backpressure nhất quán là nền tảng của KPI "50 concurrent không crash": tải vượt công suất thì job **xếp hàng trong queue**, hệ thống giảm tốc chứ không sập.
 
-**Không dùng thread để điều khiển browser** (browser đã là tiến trình OS riêng; process pool cách ly tốt hơn thread và khớp INV-6). Thiết kế Node cũ dùng `p-limit`; nay là Python + process pool — xem ADR-0006.
+**Cách ly browser do GemLogin cấp, không do worker.** Mỗi profile là một **tiến trình browser riêng của GemLogin** (vân tay + proxy sticky), worker chỉ gửi lệnh CDP (blocking I/O). Vì thế concurrency worker dùng **bounded thread pool** (mỗi thread điều khiển đúng một browser của một profile, không chia sẻ context — khớp INV-6), không phải process pool. Thiết kế Node cũ dùng `p-limit`; ADR-0006 từng chốt process pool, **ADR-0007 tinh chỉnh sang bounded thread pool** vì browser đã là tiến trình riêng của GemLogin — xem ADR-0007. Phần bất biến: **pool size = max_concurrency = prefetch**.
 
 ---
 

@@ -20,7 +20,7 @@
 
 ## Hệ quả
 
-- **Worker không phải pnpm workspace member** (không có `package.json` thật). Để `pnpm dev` vẫn chạy cả 3 app, worker tham gia Turbo qua một **wrapper mỏng** gọi `uv run` (chi tiết ở `apps/worker/CLAUDE.md`).
+- **Worker không phải pnpm workspace member** (không có `package.json`). Turbo/pnpm chỉ quản các workspace TS (api, orchestrator, packages, dashboard); worker chạy riêng bằng uv. Root cung cấp script: `dev:worker` (`uv run python -m fastcheck_worker`), `worker:lint|worker:typecheck|worker:test`, và `worker:gen` (sinh pydantic từ JSON Schema của contracts). Env dùng **pydantic-settings** (mirror `packages/config`).
 - **Worker KHÔNG cần `packages/crypto`.** Cookie được **orchestrator (TS)** giải mã qua `packages/crypto` rồi gửi xuống worker trong lệnh `RUN {url, cookie}` **qua kênh WSS + token** (job-lifecycle bước 3). Worker chỉ inject cookie đã ở dạng rõ trên kênh đã mã hoá. Điều này củng cố INV-12: **một nơi mã hoá duy nhất vẫn là `packages/crypto`**, Python không đụng AES.
 - **Golden set detector** chạy bằng **pytest** ở worker; `pnpm test:golden` ủy quyền xuống `uv run pytest`.
 - **Diễn giải lại các invariant mang tính Node:** INV-10 (`p-limit` → process pool; "không Worker Threads" → "không dùng thread điều khiển browser"), INV-9 (thêm `taskkill /T /F` + psutil), INV-6 (1 browser = 1 process). Đã cập nhật trong `docs/invariants.md`.
