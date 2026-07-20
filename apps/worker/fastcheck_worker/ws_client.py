@@ -357,7 +357,13 @@ class WorkerClient:
             ack = self._ack(command_id, ok=True, detail=detail, profile_id=profile_id)
             # CRUD làm danh sách profile đổi → đồng bộ lại lên server (§4 "đồng bộ lại").
             await self._sync_profiles(ws)
-        except Exception as exc:  # noqa: BLE001
+        except GemLoginError as exc:
+            # HIỆN message GemLogin để operator biết NGAY lý do — KHÔNG nuốt (INV-1). Vd bản FREE trả
+            # "The free version does not work this feature" khi xoá → hiểu là phải xoá tay trong GemLogin.
+            # An toàn: chỉ message API GemLogin, không credential (INV-12).
+            logger.warning("profile CRUD: GemLogin lỗi (%s)", exc)
+            ack = self._ack(command_id, ok=False, detail=f"gemlogin_error:{exc}", profile_id=None)
+        except Exception as exc:  # noqa: BLE001 — lỗi khác: log phân loại + trả ok=false (không nuốt)
             logger.warning("profile CRUD lỗi (%s)", type(exc).__name__)
             ack = self._ack(command_id, ok=False, detail=f"crud_error:{type(exc).__name__}", profile_id=None)
         await self._reply(ws, ack, str(command_id))

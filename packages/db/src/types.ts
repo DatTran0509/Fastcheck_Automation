@@ -50,6 +50,9 @@ export interface ProfilesTable {
   cooldown_until: NullableTimestamp;
   consecutive_fails: Generated<number>;
   last_used_at: NullableTimestamp;
+  // Lý do gần nhất profile bị COOLDOWN/DEAD (vd "CHALLENGED: guard đăng nhập thất bại") — hiển thị cho operator.
+  last_error: string | null;
+  last_error_at: NullableTimestamp;
 }
 
 export interface CheckJobsTable {

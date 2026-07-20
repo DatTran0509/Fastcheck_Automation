@@ -45,6 +45,32 @@ export const dashboardJobSchema = z.object({
 });
 export type DashboardJob = z.infer<typeof dashboardJobSchema>;
 
+// ── GET /dashboard/jobs — LỊCH SỬ job có filter + phân trang (bảng Kết quả, export Excel) ──────────
+// Nguồn: check_jobs (nguồn sự thật vòng đời — INV-4) LEFT JOIN check_log mới nhất theo trace_id (lấy
+// profile_health/block_reason/response_time). KHÔNG cookie/credential (INV-12).
+export const jobHistoryItemSchema = z.object({
+  trace_id: z.string(),
+  target_url: z.string(),
+  platform: z.nativeEnum(Platform),
+  status: z.nativeEnum(JobStatus),
+  result: z.nativeEnum(UrlStatus).nullish(), // url_status (LIVE/DEAD/INCONCLUSIVE) — null khi chưa xong
+  profile_health: z.string().nullish(), // OK/CHALLENGED/BLOCKED/THROTTLED (từ check_log mới nhất)
+  block_reason: z.string().nullish(),
+  response_time_ms: z.number().int().nullish(),
+  retry_count: z.number().int().nonnegative(),
+  created_at: z.string(),
+  finished_at: z.string().nullish(),
+});
+export type JobHistoryItem = z.infer<typeof jobHistoryItemSchema>;
+
+export const jobHistoryResponseSchema = z.object({
+  items: z.array(jobHistoryItemSchema),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  offset: z.number().int().nonnegative(),
+});
+export type JobHistoryResponse = z.infer<typeof jobHistoryResponseSchema>;
+
 export const dashboardCircuitSchema = z.object({
   platform: z.nativeEnum(Platform),
   open: z.boolean(),

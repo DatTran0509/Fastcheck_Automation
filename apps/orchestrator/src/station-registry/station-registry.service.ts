@@ -132,7 +132,7 @@ export class StationRegistryService {
       msg.station_id,
       msg.profiles.map((p) => ({
         gemlogin_profile_id: p.gemlogin_profile_id,
-        platform: p.platform,
+        platform: p.platform ?? null, // chưa gán nền tảng (note trống) → null (vẫn mirror để "Xem profile" khớp)
         name: p.name,
       })),
     );

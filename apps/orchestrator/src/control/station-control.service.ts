@@ -49,6 +49,8 @@ export class StationControlService {
   }
 
   private toView(p: Profile): StationProfileView {
+    const iso = (d: Date | string | null): string | null =>
+      d == null ? null : new Date(d).toISOString();
     return {
       profile_id: p.id,
       platform: p.platform,
@@ -56,7 +58,11 @@ export class StationControlService {
       account_label: p.account_label,
       status: p.status,
       health_score: p.health_score,
+      consecutive_fails: p.consecutive_fails,
       has_cookie: p.cookie_ciphertext != null,
+      status_reason: p.last_error,
+      status_reason_at: iso(p.last_error_at),
+      cooldown_until: iso(p.cooldown_until),
     };
   }
 

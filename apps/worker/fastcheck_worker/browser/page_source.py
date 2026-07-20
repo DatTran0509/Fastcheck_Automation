@@ -15,7 +15,7 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 from ..detectors.base import PageView
@@ -123,6 +123,10 @@ class DrissionPageView:
     def text_contains(self, *needles: str) -> bool:
         return any(n.lower() in self._text for n in needles)
 
+    def text_length(self) -> int:
+        """Độ dài text hiển thị — nhỏ bất thường = trang chưa render (JS/asset lỗi, vd X chunk load fail)."""
+        return len(self._text.strip())
+
     def cookie_names(self) -> set[str]:
         """Tên cookie hiện tại của browser thật (INV-12: CHỈ tên, không giá trị). Guard cookie dựa vào đây."""
         try:
@@ -143,13 +147,24 @@ class DrissionPageSource:
         cdp_address: str,
         load_timeout_seconds: float = 30.0,
         render_settle_seconds: float = 3.0,
+        render_wait_seconds: float = 12.0,
+        ready_selectors: tuple[str, ...] = (),
+        ready_texts: tuple[str, ...] = (),
     ) -> None:
         self._cdp_address = cdp_address
         self._timeout = load_timeout_seconds
-        # Chờ SPA render client-side sau `load` trước khi CHỤP body_text. FB/TikTok/YouTube render nội dung
+        # Chờ SPA render client-side sau `load` trước khi CHỤP body_text. FB/TikTok/YouTube/X render nội dung
         # (kể cả chữ "video không khả dụng") bằng JS SAU load event → chụp ngay = trắng → INCONCLUSIVE oan +
-        # retry→DLQ. Settle ngắn để tín hiệu (live/dead) kịp hiện. (đã kiểm chứng thật: TikTok id sai.)
+        # retry→DLQ. Settle = chờ TỐI THIỂU; sau đó CHỜ TÍN HIỆU QUYẾT ĐỊNH xuất hiện (skill §chống race).
         self._settle = render_settle_seconds
+        # Trần thời gian CHỜ tín hiệu quyết định (live/dead/block) hiện ra sau settle — trả NGAY khi thấy tín
+        # hiệu (nhanh cho phần lớn trang), hết trần mà vẫn không có → chụp lần cuối (detector INCONCLUSIVE, đúng
+        # INV-1: "không thấy tín hiệu" ≠ chết). Bao trọn < timeout job (INV-9) & KPI < 3 phút.
+        self._render_wait = render_wait_seconds
+        # Tín hiệu để biết trang đã render XONG phần quyết định (union live/dead/block của detector). Rỗng →
+        # giữ hành vi settle-cố-định cũ (tương thích ngược khi caller không truyền).
+        self._ready_selectors = ready_selectors
+        self._ready_texts = ready_texts
         self._page: ChromiumPage | None = None
 
     def open_page(self, target_url: str, cookie: str) -> PageView:
@@ -158,18 +173,76 @@ class DrissionPageSource:
         options = ChromiumOptions().set_address(self._cdp_address)
         page = ChromiumPage(options)
         self._page = page
-        # eager = chờ DOMContentLoaded (KHÔNG chờ toàn bộ tài nguyên). SPA (TikTok/FB/YT) có kết nối bền
-        # (websocket/long-poll) → 'load' rất lâu mới xong → normal + timeout → page.get TỰ RETRY = RELOAD liên
-        # tục, trang chưa render đã reload → bug. eager trả sớm khi DOM sẵn, rồi settle chờ JS render.
-        page.set.load_mode.eager()
+        # none = gửi lệnh điều hướng rồi TRẢ NGAY, KHÔNG chờ 'load' và (điểm mấu chốt) KHÔNG dừng tải trang.
+        # SPA có kết nối bền (websocket/long-poll) nên 'normal' + timeout khiến page.get tự reload liên tục —
+        # nhưng 'eager' lại DỪNG tải ở DOMContentLoaded → HỦY các chunk route/icon mà X import() động SAU shell
+        # (icons.*.js, Routes~…) → ChunkLoadError → chỉ còn logo/trang trắng → page_not_rendered OAN (dù cùng
+        # browser/proxy, mở tay lại vào được vì không bị dừng tải). 'none' để chunk tải tiếp trong khi settle+poll
+        # (dưới) chờ tín hiệu quyết định (tweet/thông báo lỗi) hiện ra. retry=0 ở _navigate_capture_status đã
+        # chặn vòng reload nên không cần eager để tránh nó.
+        page.set.load_mode.none()
         # INV-2 / §6.8e: cookie đi TRƯỚC điều hướng — set.cookies rồi mới .get(url).
         self._inject_cookie_before_navigate(page, cookie, target_url)
         http_status = self._navigate_capture_status(page, target_url)
         # Chờ JS render xong rồi mới chụp text (SPA) — tránh chụp trang trắng → no_decisive_signal oan.
+        body_text = self._settle_and_capture(page)
+        return DrissionPageView(page, http_status, page.url, body_text)
+
+    def _settle_and_capture(self, page: ChromiumPage) -> str:
+        """Chờ settle tối thiểu, rồi POLL tới khi thấy tín hiệu quyết định (live/dead/block) HOẶC hết trần.
+
+        Trả sớm ngay khi trang đã render phần quyết định (nhanh cho trang thường); trang SPA chậm (vd X) được
+        thêm thời gian để tweet/thông báo lỗi kịp hiện → hết cảnh chụp quá sớm → no_decisive_signal oan.
+        """
         if self._settle > 0:
             time.sleep(self._settle)
         body_text = self._body_text(page)
-        return DrissionPageView(page, http_status, page.url, body_text)
+        # Không có bảng tín hiệu → giữ hành vi cũ (chỉ settle cố định).
+        if not self._ready_selectors and not self._ready_texts:
+            return body_text
+        deadline = time.monotonic() + self._render_wait
+        while not self._has_decisive_signal(page, body_text) and time.monotonic() < deadline:
+            time.sleep(0.4)
+            body_text = self._body_text(page)
+        return body_text
+
+    def _has_decisive_signal(self, page: ChromiumPage, body_text: str) -> bool:
+        """Đã xuất hiện tín hiệu LIVE/DEAD/BLOCK chưa (selector hoặc nội dung)? — để dừng chờ sớm."""
+        low = body_text.lower()
+        if any(t.lower() in low for t in self._ready_texts):
+            return True
+        for sel in self._ready_selectors:
+            try:
+                if page.ele(f"css:{sel}", timeout=0):
+                    return True
+            except Exception as exc:  # noqa: BLE001 — selector giòn không được làm hỏng vòng chờ
+                logger.debug("selector %r lỗi khi chờ (%s) — bỏ qua", sel, type(exc).__name__)
+        return False
+
+    def diagnostics(self) -> dict[str, object]:
+        """Chẩn đoán khi INCONCLUSIVE: các marker DOM CÓ THẬT trên trang (data-e2e / data-testid) + có <video>?
+        Giúp cập nhật selector detector khi nền tảng đổi DOM. KHÔNG chứa cookie/credential (INV-12) — chỉ cấu trúc.
+        """
+        if self._page is None:
+            return {}
+        markers: set[str] = set()
+        for attr in ("data-e2e", "data-testid"):
+            try:
+                # Stub DrissionPage khai báo ChromiumElementsList.__iter__/__getitem__ sai (trả List thay vì
+                # Iterator/phần tử) → Pylance coi kết quả không iterable. Runtime .eles LUÔN trả list → ép list[Any].
+                elements = cast("list[Any]", self._page.eles(f"css:[{attr}]", timeout=0))
+                for el in elements[:60]:
+                    val = el.attr(attr)
+                    if val:
+                        markers.add(f"{attr}={val}")
+            except Exception as exc:  # noqa: BLE001 — chẩn đoán best-effort, không chặn luồng
+                logger.debug("diag đọc %s lỗi (%s)", attr, type(exc).__name__)
+        has_video = False
+        try:
+            has_video = bool(self._page.ele("css:video", timeout=0))
+        except Exception:  # noqa: BLE001, S110 — best-effort
+            pass
+        return {"markers": sorted(markers), "has_video": has_video}
 
     def close(self) -> None:
         # KHÔNG quit browser (GemLogin quản vòng đời — adapter.close_browser lo). Chỉ ngắt tham chiếu.
@@ -214,9 +287,14 @@ class DrissionPageSource:
             # retry=0: điều hướng ĐÚNG 1 LẦN, KHÔNG tự tải lại khi chờ lâu (chống RELOAD liên tục — bug đã gặp).
             # Chờ lâu/không xong → ném → catch bên dưới (status=None), vẫn còn DOM + settle → detect bình thường.
             page.get(target_url, timeout=self._timeout, retry=0)
-            packet = page.listen.wait(count=1, timeout=8)
-            if packet is not None and getattr(packet, "response", None) is not None:
-                status = int(packet.response.status)
+            # Stub khai báo wait() trả Union[List, DataPacket, None] dù count=1 luôn cho ĐÚNG 1 gói → chuẩn hoá
+            # về 1 gói (hoặc None). Nếu lỡ nhận list, lấy phần tử đầu — tránh mất status (getattr trên list = None).
+            caught = page.listen.wait(count=1, timeout=8)
+            if isinstance(caught, list):
+                caught = caught[0] if caught else None
+            response = getattr(caught, "response", None)
+            if response is not None:
+                status = int(response.status)
         except Exception as exc:  # noqa: BLE001 — bắt status là best-effort, không chặn detect
             logger.debug("không bắt được HTTP status (%s) — vote dựa DOM/text", type(exc).__name__)
         finally:

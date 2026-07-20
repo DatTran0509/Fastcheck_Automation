@@ -148,6 +148,43 @@ describe('health_score / cooldown / consecutive_fails', () => {
     expect(remain).not.toContain('ptest-gone');
   });
 
+  it('MIRROR (§3): upsert profile chưa gán nền tảng (platform NULL) → hiện trong listByStation; register GÁN nền tảng; sync sau (NULL) KHÔNG clobber', async () => {
+    await db.deleteFrom('profiles').where('gemlogin_profile_id', '=', 'ptest-mirror').execute();
+
+    // 1) Sync mirror profile GemLogin CHƯA gán nền tảng (note trống → platform null).
+    await profileRepo.upsertStationProfiles(db, STATION_ID, [
+      { gemlogin_profile_id: 'ptest-mirror', platform: null, name: 'unassigned-01' },
+    ]);
+    let row = (await profileRepo.listByStation(db, STATION_ID)).find(
+      (r) => r.gemlogin_profile_id === 'ptest-mirror',
+    );
+    expect(row).toBeDefined();
+    expect(row?.platform).toBeNull(); // hiển thị trong "Xem profile" nhưng chưa dispatch được
+
+    // 2) "Nạp tài khoản" GÁN nền tảng (dedup theo gid → cập nhật đúng dòng mirror, không tạo trùng).
+    const assigned = await profileRepo.registerAccount(db, {
+      platform: PLATFORM,
+      gemlogin_profile_id: 'ptest-mirror',
+      stationId: STATION_ID,
+    });
+    expect(assigned.platform).toBe(PLATFORM);
+    const countAfterAssign = (await profileRepo.listByStation(db, STATION_ID)).filter(
+      (r) => r.gemlogin_profile_id === 'ptest-mirror',
+    ).length;
+    expect(countAfterAssign).toBe(1); // KHÔNG sinh dòng trùng
+
+    // 3) Vòng sync sau (note vẫn trống → platform null) KHÔNG được xoá gán ở bước 2.
+    await profileRepo.upsertStationProfiles(db, STATION_ID, [
+      { gemlogin_profile_id: 'ptest-mirror', platform: null, name: 'unassigned-01' },
+    ]);
+    row = (await profileRepo.listByStation(db, STATION_ID)).find(
+      (r) => r.gemlogin_profile_id === 'ptest-mirror',
+    );
+    expect(row?.platform).toBe(PLATFORM); // giữ nguyên gán, không clobber về null
+
+    await db.deleteFrom('profiles').where('gemlogin_profile_id', '=', 'ptest-mirror').execute();
+  });
+
   it('reapExpiredCooldowns: COOLDOWN hết hạn → AVAILABLE (không kẹt vĩnh viễn)', async () => {
     const id = await seedOneProfile(60);
     // Đặt COOLDOWN với cooldown_until ĐÃ QUA (1 phút trước) — mô phỏng cooldown đã hết.
@@ -161,6 +198,19 @@ describe('health_score / cooldown / consecutive_fails', () => {
     const s = await statusOf(id);
     expect(s.status).toBe(ProfileStatus.AVAILABLE); // claim lại được, không kẹt
     expect(s.cooldown_until).toBeNull();
+  });
+
+  it('reapExpiredCooldowns: COOLDOWN mà cooldown_until NULL (trạng thái kẹt) → AVAILABLE', async () => {
+    const id = await seedOneProfile(70);
+    // Mô phỏng trạng thái kẹt: COOLDOWN nhưng KHÔNG có cooldown_until (không gì giữ trong cooldown).
+    await db
+      .updateTable('profiles')
+      .set({ status: ProfileStatus.COOLDOWN, cooldown_until: null })
+      .where('id', '=', id)
+      .execute();
+    const n = await profileRepo.reapExpiredCooldowns(db);
+    expect(n).toBeGreaterThanOrEqual(1);
+    expect((await statusOf(id)).status).toBe(ProfileStatus.AVAILABLE);
   });
 
   it('cooldownProfile (THROTTLED/lỗi hạ tầng) → COOLDOWN nhưng KHÔNG phạt health/fails (không kết tội tài khoản)', async () => {

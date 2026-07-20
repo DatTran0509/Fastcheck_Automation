@@ -2,6 +2,35 @@
 
 > Nhật ký tiến độ dựng source. Cập nhật mỗi khi hoàn thành một mốc. KHÔNG tự nhảy phase kế tiếp khi chưa được duyệt.
 
+## Làm lại Dashboard + enabler backend + audit Excel (2026-07-19)
+
+**Audit vs `refs/GHN_DPA_DanhGiaThuViec_Dat_v1.1.xlsx`:** mọi yêu cầu Mục 1+2 đều CÓ trong code & đã wire (X login cả info+cookie, TT info-login, FB/YT cookie, auto-switch, multi-profile, station mgmt, sync profile). Gap = PROOF/OPS, không phải thiếu tính năng: G1 ≥98% accuracy chưa đo trên tài khoản thật (mới golden), G2 info-login là kênh operator (chưa auto-fallback trong job khi cookie chết giữa chừng), G3 KPI 50-concurrent đo ở fake mode, G4 CDP forward mới là stub chính sách (chưa có transport), G5 xoá profile không được trên GemLogin Free.
+
+**Backend enabler:**
+- `GET /dashboard/jobs` — lịch sử job có filter (platform/status/url ILIKE) + phân trang + JOIN check_log mới nhất (result/profile_health/block_reason/response_time). `jobRepo.listJobs`/`countJobs` + `dashboard.dto` (jobHistory) + `DashboardService.jobsHistory`.
+- LÝ DO cooldown: migration `profile_last_error` (`last_error`,`last_error_at`); `recordFailure`/`cooldownProfile` ghi lý do ("CHALLENGED/BLOCKED/THROTTLED: …"), success/release/register xoá; `dispatch` build reason; `StationProfileView` thêm `status_reason`/`status_reason_at`/`cooldown_until`/`consecutive_fails`.
+
+**Dashboard làm lại từ đầu (React + react-router + recharts + SheetJS):** shell sidebar+topbar+theme tối; 6 trang — Tổng quan (KPI + pie + bar theo platform + cảnh báo), Stations (bảng realtime + circuit), Profiles (bảng rõ ràng + LÝ DO cooldown + khuyến nghị, thay JSON), Kết quả (bảng job: link, search, filter, lazy-load IntersectionObserver, **export Excel**), Tài khoản (nạp/login/mở-tắt browser/check + OTP), Hướng dẫn. Bỏ banner "pool thấp" ở header → đưa vào trang Tổng quan.
+
+**Gates:** build 8/8, typecheck 13/13, lint 7/7, orchestrator 21/21, worker pytest 88. Cần RESTART `pnpm dev` (orchestrator+dashboard) + `pnpm dev:worker`.
+
+### Tinh chỉnh sau phản hồi (2026-07-20)
+- **X post ra INCONCLUSIVE (`no_decisive_signal`)** = race SPA: settle cố định 3s chụp trước khi X render tweet/thông báo lỗi. Fix: `DrissionPageSource` **chờ tín hiệu quyết định** (union live/dead/block selector + text của detector) tới trần `render_wait` (~12s), trả ngay khi thấy → hết chụp sớm oan. runner truyền `detector.spec`. Broaden X dead_texts (đổi "tweets"→"posts"). CẦN restart worker.
+- **Trang CHƯA render** (JS/asset không tải — vd X `ChunkLoadError` do IP bị chặn/thiếu proxy): thêm `text_length()` cho PageView; detect khi INCONCLUSIVE + text < 40 ký tự → **THROTTLED + `page_not_rendered:assets_failed`** (lỗi hạ tầng, không phạt tài khoản, báo rõ để operator biết cần proxy/đổi IP) thay vì `no_decisive_signal` mơ hồ. 2 test mới (pytest 90).
+- **reapExpiredCooldowns** dọn cả COOLDOWN `cooldown_until` NULL (chống kẹt) + test.
+- **UI**: gộp "Nạp tài khoản" vào trang Pool (component `AccountControls`, nạp xong tự refresh bảng); chuyển "Gửi check" lên đầu trang Kết quả (gửi xong tự refresh); thêm **cột ID** (trace_id, bấm copy) ở bảng job; auto-detect nền tảng từ domain cookie (cảnh báo chọn nhầm); khối login-by-info LUÔN hiện. Nav còn 5 trang.
+
+## Sửa nghiệp vụ: `profiles` là BẢN SAO (MIRROR) của GemLogin (2026-07-19)
+
+Lỗi phát hiện khi test thật: xoá profile bên GemLogin → DB không đổi; "Xem profile" chỉ hiện profile đã nạp chứ không phản ánh số profile GemLogin. Nguyên nhân: sync **BỎ QUA** profile không có nhãn `fastcheck-platform=` ở note → DB không bao giờ mirror đúng GemLogin. Vi phạm design §3 ("danh sách profile trên máy KHỚP bảng profiles sau đồng bộ").
+
+Sửa (mô hình mirror, 1 GemLogin profile = 1 dòng — INV-6):
+- **DB**: migration `profile_platform_nullable` — `profiles.platform` **NULLABLE**. NULL = profile đã mirror nhưng CHƯA gán nền tảng. `claimProfile` lọc `platform = X` → NULL không bao giờ được cấp job (không dispatch nhầm).
+- **contracts/worker**: `stationProfileSchema.platform` + `stationProfileViewSchema.platform` nullable (regen zod→JSON→pydantic); worker `_sync_profiles` gửi **MỌI** profile GemLogin (không nhãn → platform=None), không skip.
+- **repo**: `upsertStationProfiles` mirror toàn bộ + **KHÔNG clobber** platform đã gán bằng NULL (sync sau note trống không xoá gán). `registerAccount` dedup theo **gid** (= "Nạp tài khoản" GÁN nền tảng cho dòng mirror, không tạo trùng). `countByStatusAll` loại profile chưa gán khỏi metric pool.
+- **Kết quả**: "Xem profile" khớp đúng danh sách GemLogin; xoá bên GemLogin → prune tự gỡ; profile mới chưa gán vẫn hiện (platform null) tới khi nạp.
+- **Gates**: build 8/8, typecheck 13/13, worker mypy 30 + ruff + pytest 88, orchestrator **21/21** (+test mirror/no-clobber). Cần RESTART worker + orchestrator để nạp.
+
 ## Phase 0 — Khung xương chạy được ✅ HOÀN TẤT (2026-07-17)
 
 Mục tiêu (docs/roadmap.md): monorepo + hạ tầng + migration + WS register/heartbeat, **chưa có nghiệp vụ** (detector/login/auto-switch để phase sau).

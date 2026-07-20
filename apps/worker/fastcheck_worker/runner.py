@@ -86,15 +86,34 @@ def run_check(
                 raise ValueError("real mode cần gemlogin_profile_id (orchestrator phải gửi)")
             _notify(on_progress, "OPEN_BROWSER", f"profile={gid}")
             handle = adapter.open_browser(gid, payload["cookie"])
+            spec = detector.spec
             drission = DrissionPageSource(
                 handle.cdp_address,
                 render_settle_seconds=payload.get("render_settle_seconds", 3.0),
+                # Chờ tới khi tín hiệu quyết định (live/dead/block) của platform hiện ra rồi mới chụp — chống
+                # race SPA (vd X render tweet/thông báo lỗi chậm) → hết no_decisive_signal oan (skill §chống race).
+                ready_selectors=spec.live_selectors + spec.dead_selectors + spec.block_selectors,
+                ready_texts=spec.dead_texts + spec.block_texts,
             )
             try:
                 _notify(on_progress, "DETECT", payload["platform"])
                 page = drission.open_page(payload["target_url"], payload["cookie"])
                 elapsed = int((time.monotonic() - start) * 1000)
                 result = detector.detect(page, response_time_ms=elapsed)
+                # DIAG: INCONCLUSIVE mà không rõ tín hiệu → log CẤU TRÚC DOM thật (marker data-e2e/testid, có
+                # <video>?) để cập nhật selector khi nền tảng đổi. KHÔNG log cookie/credential (INV-12).
+                if result.url_status == UrlStatus.INCONCLUSIVE and (result.block_reason or "").startswith(
+                    ("no_decisive", "page_not_rendered")
+                ):
+                    diag = drission.diagnostics()
+                    logger.warning(
+                        "DIAG %s INCONCLUSIVE (%s): has_video=%s markers=%s url=%s",
+                        payload["platform"],
+                        result.block_reason,
+                        diag.get("has_video"),
+                        diag.get("markers"),
+                        payload["target_url"],
+                    )
                 # Chỉ refresh cookie khi profile KHOẺ (đã đăng nhập) — cookie phiên còn giá trị (spec §4.4).
                 if result.profile_health == ProfileHealth.OK:
                     fresh_cookie = drission.cookies_string() or None

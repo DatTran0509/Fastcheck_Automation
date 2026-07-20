@@ -1,10 +1,16 @@
-import { Controller, Get, Inject, Res, Sse, type MessageEvent } from '@nestjs/common';
+import { Controller, Get, Inject, Query, Res, Sse, type MessageEvent } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { interval, map, startWith, switchMap, type Observable } from 'rxjs';
+import { JobStatus, Platform } from '@fastcheck/shared';
 import type { OrchestratorEnv } from '@fastcheck/config';
 import { ENV } from '../tokens.js';
 import { MetricsService } from './metrics.service.js';
 import { DashboardService } from '../dashboard/dashboard.service.js';
+
+const asEnum = <T extends string>(all: readonly T[], v?: string): T | undefined =>
+  v && (all as readonly string[]).includes(v) ? (v as T) : undefined;
+const asInt = (v: string | undefined, def: number, min: number, max: number): number =>
+  Math.min(Math.max(parseInt(v ?? '', 10) || def, min), max);
 
 /**
  * Observability HTTP: `/metrics` (Prometheus), `/dashboard/snapshot` (một lần), `/dashboard/stream` (SSE
@@ -27,6 +33,27 @@ export class ObservabilityController {
   @Get('dashboard/snapshot')
   async getSnapshot() {
     return this.dashboard.snapshot();
+  }
+
+  /**
+   * Lịch sử job có filter + phân trang cho bảng Kết quả (search theo url, filter platform/status, lazy-load,
+   * export). limit tối đa 5000 (đủ cho một lần export). Giá trị enum sai → bỏ filter đó (không lỗi 400 vặt).
+   */
+  @Get('dashboard/jobs')
+  async getJobs(
+    @Query('platform') platform?: string,
+    @Query('status') status?: string,
+    @Query('q') q?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.dashboard.jobsHistory({
+      platform: asEnum(Object.values(Platform), platform),
+      status: asEnum(Object.values(JobStatus), status),
+      q: q?.trim() || undefined,
+      limit: asInt(limit, 50, 1, 5000),
+      offset: asInt(offset, 0, 0, 10_000_000),
+    });
   }
 
   /** SSE: đẩy snapshot theo chu kỳ (realtime, không polling DB nặng phía FE). */

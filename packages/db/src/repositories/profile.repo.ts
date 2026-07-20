@@ -43,7 +43,7 @@ export async function claimProfile(
 export async function releaseProfile(db: DB, profileId: string): Promise<void> {
   await db
     .updateTable('profiles')
-    .set({ status: ProfileStatus.AVAILABLE, lease_expires_at: null })
+    .set({ status: ProfileStatus.AVAILABLE, lease_expires_at: null, last_error: null, last_error_at: null })
     .where('id', '=', profileId)
     .execute();
 }
@@ -76,7 +76,9 @@ export async function recordSuccess(db: DB, profileId: string, healthBump: numbe
         lease_expires_at = NULL,
         consecutive_fails = 0,
         health_score = LEAST(100, health_score + ${healthBump}),
-        last_used_at = now()
+        last_used_at = now(),
+        last_error = NULL,
+        last_error_at = NULL
     WHERE id = ${profileId};
   `.execute(db);
 }
@@ -86,6 +88,7 @@ export interface RecordFailureInput {
   healthPenalty: number; // trừ health_score mỗi lần challenge/block
   cooldownSeconds: number; // thời gian nghỉ khi COOLDOWN
   deadThreshold: number; // consecutive_fails >= ngưỡng → DEAD (loại khỏi pool)
+  reason?: string | null; // lý do (vd "CHALLENGED: guard đăng nhập thất bại") — hiển thị cho operator
 }
 
 /**
@@ -94,6 +97,7 @@ export interface RecordFailureInput {
  * (nghỉ thay vì giết ngay — giữ tuổi thọ pool, skill §3). Trả profile SAU cập nhật để biết đã DEAD hay COOLDOWN.
  */
 export async function recordFailure(db: DB, input: RecordFailureInput): Promise<Profile | null> {
+  const reason = input.reason ?? null;
   const result = await sql<Profile>`
     UPDATE profiles
     SET consecutive_fails = consecutive_fails + 1,
@@ -106,7 +110,9 @@ export async function recordFailure(db: DB, input: RecordFailureInput): Promise<
         cooldown_until = CASE
           WHEN consecutive_fails + 1 >= ${input.deadThreshold} THEN NULL
           ELSE now() + make_interval(secs => ${input.cooldownSeconds})
-        END
+        END,
+        last_error = COALESCE(${reason}, last_error),
+        last_error_at = CASE WHEN ${reason}::text IS NULL THEN last_error_at ELSE now() END
     WHERE id = ${input.profileId}
     RETURNING *;
   `.execute(db);
@@ -124,12 +130,16 @@ export async function cooldownProfile(
   db: DB,
   profileId: string,
   cooldownSeconds: number,
+  reason?: string | null,
 ): Promise<void> {
+  const r = reason ?? null;
   await sql`
     UPDATE profiles
     SET status = 'COOLDOWN',
         lease_expires_at = NULL,
-        cooldown_until = now() + make_interval(secs => ${cooldownSeconds})
+        cooldown_until = now() + make_interval(secs => ${cooldownSeconds}),
+        last_error = COALESCE(${r}, last_error),
+        last_error_at = CASE WHEN ${r}::text IS NULL THEN last_error_at ELSE now() END
     WHERE id = ${profileId};
   `.execute(db);
 }
@@ -157,13 +167,14 @@ export async function reapExpiredLeases(db: DB): Promise<number> {
  * KHÔNG reset `consecutive_fails` (giữ lịch sử lỗi → vẫn tiến tới DEAD nếu tiếp tục fail). Trả số đã dọn.
  */
 export async function reapExpiredCooldowns(db: DB): Promise<number> {
+  // Reap khi cooldown_until đã qua HOẶC NULL: COOLDOWN mà không có mốc hết hạn là trạng thái vô nghĩa/kẹt
+  // (không gì giữ nó trong cooldown) → trả AVAILABLE để không kẹt vĩnh viễn.
   const result = await sql<{ id: string }>`
     UPDATE profiles
     SET status = 'AVAILABLE',
         cooldown_until = NULL
     WHERE status = 'COOLDOWN'
-      AND cooldown_until IS NOT NULL
-      AND cooldown_until < now()
+      AND (cooldown_until IS NULL OR cooldown_until < now())
     RETURNING id;
   `.execute(db);
   return result.rows.length;
@@ -267,6 +278,8 @@ export async function registerAccount(db: DB, input: RegisterAccountInput): Prom
         cooldown_until: null,
         lease_expires_at: null,
         consecutive_fails: 0,
+        last_error: null,
+        last_error_at: null,
       })
       .where('id', '=', existing.id)
       .returningAll()
@@ -296,14 +309,23 @@ export interface ProfileStatusCount {
   count: number;
 }
 
-/** Đếm profile theo (platform, status) — cho metric `fastcheck_profiles` + pool health dashboard. */
+/**
+ * Đếm profile theo (platform, status) — cho metric `fastcheck_profiles` + pool health dashboard.
+ * CHỈ tính profile ĐÃ gán nền tảng (platform IS NOT NULL): metric này phản ánh POOL CẤP PHÁT ĐƯỢC theo platform
+ * + cảnh báo pool thấp. Profile mới mirror chưa gán (platform NULL) là "kho tồn", không thuộc pool → loại khỏi metric.
+ */
 export async function countByStatusAll(db: DB): Promise<ProfileStatusCount[]> {
   const rows = await db
     .selectFrom('profiles')
     .select((eb) => ['platform', 'status', eb.fn.countAll<string>().as('count')])
+    .where('platform', 'is not', null)
     .groupBy(['platform', 'status'])
     .execute();
-  return rows.map((r) => ({ platform: r.platform, status: r.status, count: Number(r.count) }));
+  return rows.map((r) => ({
+    platform: r.platform as Platform,
+    status: r.status,
+    count: Number(r.count),
+  }));
 }
 
 export interface StationProfileInput {

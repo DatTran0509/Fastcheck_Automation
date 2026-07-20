@@ -158,6 +158,10 @@ class HtmlPageView:
         """True nếu văn bản hiển thị chứa BẤT KỲ chuỗi nào (không phân biệt hoa thường)."""
         return any(n.lower() in self._text for n in needles)
 
+    def text_length(self) -> int:
+        """Độ dài text hiển thị — để phân biệt 'trang render xong' với 'shell trắng/JS chưa tải' (INV-8)."""
+        return len(self._text.strip())
+
     def cookie_names(self) -> set[str]:
         """Fake/golden: KHÔNG mô phỏng cookie → rỗng → guard dùng DOM fallback (giữ nguyên hành vi golden)."""
         return set()

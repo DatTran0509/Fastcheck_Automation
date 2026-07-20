@@ -43,7 +43,13 @@ export const stationProfileViewSchema = z.object({
   // profile_health chỉ tồn tại theo TỪNG kết quả check ở check_logs). health_score = điểm sức khoẻ pool.
   status: z.string(),
   health_score: z.number().int(),
+  consecutive_fails: z.number().int().nonnegative(),
   has_cookie: z.boolean(),
+  // LÝ DO gần nhất profile bị COOLDOWN/DEAD (vd "CHALLENGED: guard đăng nhập thất bại") + mốc thời gian +
+  // thời điểm hết cooldown — để dashboard GIẢI THÍCH lỗi + khuyến nghị (không để người dùng đoán).
+  status_reason: z.string().nullish(),
+  status_reason_at: z.string().nullish(),
+  cooldown_until: z.string().nullish(),
 });
 export type StationProfileView = z.infer<typeof stationProfileViewSchema>;
 

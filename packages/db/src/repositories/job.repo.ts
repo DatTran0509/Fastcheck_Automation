@@ -1,3 +1,4 @@
+import { sql } from 'kysely';
 import { JobStatus, type Platform, type UrlStatus } from '@fastcheck/shared';
 import type { DB } from '../client.js';
 import type { CheckJob } from '../types.js';
@@ -149,4 +150,86 @@ export async function getJobByTraceId(db: DB, traceId: string): Promise<CheckJob
     .where('trace_id', '=', traceId)
     .orderBy('created_at', 'desc')
     .executeTakeFirst();
+}
+
+export interface JobHistoryFilter {
+  platform?: Platform;
+  status?: JobStatus;
+  q?: string; // substring của target_url HOẶC trace_id (ILIKE, không phân biệt hoa/thường) — tìm theo link hoặc ID
+  limit: number;
+  offset: number;
+}
+
+export interface JobHistoryRow {
+  trace_id: string;
+  target_url: string;
+  platform: Platform;
+  status: JobStatus;
+  result: UrlStatus | null;
+  profile_health: string | null;
+  block_reason: string | null;
+  response_time_ms: number | null;
+  retry_count: number;
+  created_at: Date;
+  finished_at: Date | null;
+}
+
+// LEFT JOIN check_log MỚI NHẤT theo trace_id (DISTINCT ON) — lấy profile_health/block_reason/response_time
+// của lần chạy gần nhất mà KHÔNG N+1. check_jobs vẫn là nguồn sự thật vòng đời (INV-4).
+function lastLog(db: DB) {
+  return db
+    .selectFrom('check_logs as cl')
+    .select(['cl.trace_id', 'cl.profile_health', 'cl.block_reason', 'cl.response_time_ms'])
+    .distinctOn('cl.trace_id')
+    .orderBy('cl.trace_id')
+    .orderBy('cl.checked_at', 'desc');
+}
+
+/** Lịch sử job có filter (platform/status/url) + phân trang. Cho bảng Kết quả (search/filter/export). */
+export async function listJobs(db: DB, f: JobHistoryFilter): Promise<JobHistoryRow[]> {
+  let q = db
+    .selectFrom('check_jobs as j')
+    .leftJoin(lastLog(db).as('ll'), (join) => join.onRef('ll.trace_id', '=', 'j.trace_id'))
+    .select([
+      'j.trace_id',
+      'j.target_url',
+      'j.platform',
+      'j.status',
+      'j.result',
+      'j.retry_count',
+      'j.created_at',
+      'j.finished_at',
+      'll.profile_health',
+      'll.block_reason',
+      'll.response_time_ms',
+    ]);
+  if (f.platform) q = q.where('j.platform', '=', f.platform);
+  if (f.status) q = q.where('j.status', '=', f.status);
+  if (f.q) {
+    // Tìm theo LINK hoặc ID: khớp target_url HOẶC trace_id (cast ::text vì uuid không ILIKE trực tiếp).
+    const like = `%${f.q}%`;
+    q = q.where((eb) =>
+      eb.or([eb('j.target_url', 'ilike', like), eb(sql<string>`j.trace_id::text`, 'ilike', like)]),
+    );
+  }
+  const rows = await q.orderBy('j.created_at', 'desc').limit(f.limit).offset(f.offset).execute();
+  return rows as unknown as JobHistoryRow[];
+}
+
+/** Tổng số job khớp filter (cho phân trang UI). */
+export async function countJobs(
+  db: DB,
+  f: Omit<JobHistoryFilter, 'limit' | 'offset'>,
+): Promise<number> {
+  let q = db.selectFrom('check_jobs').select((eb) => eb.fn.countAll<string>().as('c'));
+  if (f.platform) q = q.where('platform', '=', f.platform);
+  if (f.status) q = q.where('status', '=', f.status);
+  if (f.q) {
+    const like = `%${f.q}%`;
+    q = q.where((eb) =>
+      eb.or([eb('target_url', 'ilike', like), eb(sql<string>`trace_id::text`, 'ilike', like)]),
+    );
+  }
+  const r = await q.executeTakeFirst();
+  return Number(r?.c ?? 0);
 }

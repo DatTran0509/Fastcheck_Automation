@@ -32,6 +32,10 @@ class PageView(Protocol):
 
     def text_contains(self, *needles: str) -> bool: ...
 
+    def text_length(self) -> int:
+        """Độ dài text hiển thị — để phân biệt trang render xong với shell trắng (JS/asset lỗi)."""
+        ...
+
     def cookie_names(self) -> set[str]:
         """Tên các cookie hiện có (KHÔNG giá trị — INV-12). Browser thật trả cookie thật; fake trả rỗng."""
         ...
@@ -73,6 +77,8 @@ class Signals:
     dom_live: bool
     dom_dead: bool
     dom_block: bool
+    # độ dài text hiển thị — nhỏ bất thường = trang chưa render (JS/asset lỗi). -1 = chưa biết (bỏ qua kiểm tra).
+    content_len: int = -1
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,22 @@ def _redirected_to_login(url: str, markers: tuple[str, ...]) -> bool:
         return False
     segments = {seg.lower() for seg in urlparse(url).path.split("/") if seg}
     return any(m.lower() in segments for m in markers)
+
+
+# Dưới ngưỡng này (ký tự text hiển thị) = trang CHƯA render (JS/asset không tải được, vd X ChunkLoadError):
+# không có tín hiệu nào để kết luận. Trang thật (tweet/thông báo lỗi/soft-404) luôn nhiều text hơn nhiều.
+_MIN_RENDERED_CHARS = 40
+
+
+def _content_len(page: PageView) -> int:
+    """Đọc độ dài text best-effort. Test double thiếu method → -1 (bỏ qua kiểm tra 'chưa render')."""
+    getter = getattr(page, "text_length", None)
+    if getter is None:
+        return -1
+    try:
+        return int(getter())
+    except Exception:  # noqa: BLE001 — best-effort, lỗi → bỏ qua (không chặn detect)
+        return -1
 
 
 def _page_cookie_names(page: PageView) -> set[str]:
@@ -138,6 +160,7 @@ def collect_signals(page: PageView, spec: SignalSpec) -> Signals:
         # soft-404: DOM báo lỗi HOẶC nội dung "không tồn tại" (INV-8 — không chỉ HTTP status).
         dom_dead=page.has_element(*spec.dead_selectors) or page.text_contains(*spec.dead_texts),
         dom_block=page.has_element(*spec.block_selectors) or page.text_contains(*spec.block_texts),
+        content_len=_content_len(page),
     )
 
 
@@ -208,10 +231,27 @@ class BaseDetector:
 
         # ── Phase B: vote target (chỉ khi profile khoẻ) — INV-1, INV-8 ──
         url_status = vote_engine(signals, self.spec)
-        block_reason = None if url_status != UrlStatus.INCONCLUSIVE else "no_decisive_signal"
+        if url_status == UrlStatus.INCONCLUSIVE:
+            # Không có tín hiệu NÀO + trang gần như trắng (0 < text < ngưỡng) = trang CHƯA render: JS/asset
+            # không tải được (vd X chunk load fail do IP bị chặn / thiếu proxy). Đây là lỗi HẠ TẦNG/tải trang,
+            # KHÔNG phải target chết & KHÔNG phải lỗi tài khoản → THROTTLED (nghỉ ngắn, không phạt health, không
+            # trip circuit), báo LÝ DO rõ để operator biết cần proxy/đổi IP. Vẫn INCONCLUSIVE về target (INV-1).
+            if 0 <= signals.content_len < _MIN_RENDERED_CHARS:
+                return DetectResult(
+                    url_status=UrlStatus.INCONCLUSIVE,
+                    profile_health=ProfileHealth.THROTTLED,
+                    block_reason="page_not_rendered:assets_failed (JS/CDN không tải — nghi IP bị chặn/thiếu proxy)",
+                    response_time_ms=response_time_ms,
+                )
+            return DetectResult(
+                url_status=UrlStatus.INCONCLUSIVE,
+                profile_health=ProfileHealth.OK,
+                block_reason="no_decisive_signal",
+                response_time_ms=response_time_ms,
+            )
         return DetectResult(
             url_status=url_status,
             profile_health=ProfileHealth.OK,
-            block_reason=block_reason,
+            block_reason=None,
             response_time_ms=response_time_ms,
         )

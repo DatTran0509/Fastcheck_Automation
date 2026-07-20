@@ -26,6 +26,24 @@ import { JobPublisher } from './job-publisher.js';
 import { CircuitBreakerService } from '../circuit/circuit-breaker.service.js';
 import { MetricsService } from '../metrics/metrics.service.js';
 
+/**
+ * Xây LÝ DO ngắn gọn cho profile bị hạ cấp — lưu vào profiles.last_error để dashboard hiển thị cho operator
+ * (không để người dùng đoán tại sao cooldown). Dạng "<HEALTH>: <chi tiết>"; FE map sang khuyến nghị.
+ */
+function buildFailureReason(health: ProfileHealth, blockReason: string | null): string {
+  const detail = blockReason?.trim();
+  switch (health) {
+    case ProfileHealth.CHALLENGED:
+      return `CHALLENGED: ${detail || 'guard đăng nhập thất bại — cookie chết / chưa đăng nhập đúng nền tảng'}`;
+    case ProfileHealth.BLOCKED:
+      return `BLOCKED: ${detail || 'nền tảng chặn (captcha/challenge) — cần đổi profile/proxy'}`;
+    case ProfileHealth.THROTTLED:
+      return `THROTTLED: ${detail || 'GemLogin mở browser không kịp (lỗi hạ tầng) — nghỉ ngắn rồi thử lại'}`;
+    default:
+      return detail || String(health);
+  }
+}
+
 /** Ngữ cảnh để ack đúng message RabbitMQ khi job hoàn tất (manual ack — INV-4/INV-10). */
 export interface AckContext {
   channel: Channel;
@@ -277,6 +295,7 @@ export class DispatchService {
    * nếu vượt max_retries. KHÔNG cache (INV-1) và KHÔNG chốt DONE cho các nhánh này.
    */
   private async autoSwitch(pending: PendingJob, result: JobResultMessage): Promise<void> {
+    const reason = buildFailureReason(result.profile_health, result.block_reason ?? null);
     if (result.profile_health === ProfileHealth.THROTTLED) {
       // Lỗi HẠ TẦNG (browser mở không được / GemLogin kẹt) — KHÔNG phải lỗi tài khoản: nghỉ NGẮN để GemLogin
       // hồi + cắt vòng hammer (claimProfile bỏ qua profile cooldown), KHÔNG phạt health/không DEAD. Tự AVAILABLE.
@@ -284,6 +303,7 @@ export class DispatchService {
         this.db,
         pending.profile_id,
         this.env.PROFILE_THROTTLE_COOLDOWN_SECONDS,
+        reason,
       );
       this.logger.warn(
         {
@@ -301,6 +321,7 @@ export class DispatchService {
         healthPenalty: this.env.PROFILE_HEALTH_PENALTY,
         cooldownSeconds: this.env.PROFILE_COOLDOWN_SECONDS,
         deadThreshold: this.env.PROFILE_DEAD_THRESHOLD,
+        reason,
       });
       if (result.profile_health === ProfileHealth.BLOCKED) {
         await this.maybeRotateProxy(pending.profile_id);

@@ -24,10 +24,23 @@ TIKTOK_SPEC = SignalSpec(
     # KHÔNG dùng bare "video": thẻ <video> shell hiện CẢ ở trang "video không khả dụng" → LIVE giả (đã kiểm
     # chứng: id video sai vẫn khớp "video"). Dùng data-e2e chi tiết video (chỉ có ở video THẬT).
     live_selectors=(
-        # Video
+        # Video — khung chi tiết + player.
         "[data-e2e=browse-video]",
         "[data-e2e=video-detail]",
         "[data-e2e=video-player]",
+        "[data-e2e=feed-video]",
+        # Tương tác video THẬT (like/comment/share/desc/music): CHỈ có ở video sống, KHÔNG có ở trang "video
+        # không khả dụng" → tín hiệu LIVE bền hơn, không dương tính giả như bare <video>. (TikTok đổi data-e2e
+        # liên tục — nhiều biến thể để bắt được; xem log DIAG khi no_decisive_signal để cập nhật.)
+        "[data-e2e=like-count]",
+        "[data-e2e=comment-count]",
+        "[data-e2e=share-count]",
+        "[data-e2e=browse-like-count]",
+        "[data-e2e=browse-comment-count]",
+        "[data-e2e=video-desc]",
+        "[data-e2e=browse-video-desc]",
+        "[data-e2e=video-music]",
+        "[data-e2e=browse-music]",
         # Profile (@user): follower count + nút follow + tiêu đề + item video trong grid — profile sống.
         "[data-e2e=followers-count]",
         "[data-e2e=follow-button]",

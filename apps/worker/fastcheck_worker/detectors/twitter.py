@@ -41,9 +41,13 @@ TWITTER_SPEC = SignalSpec(
         "this post was deleted",
         "post unavailable",
         "hmm...this page doesn't exist",
+        "this page doesn't exist",
         "this account doesn't exist",
         "account suspended",
+        "this post is from a suspended account",
+        # X đổi "Tweet" → "Post": giữ cả hai biến thể để bắt tài khoản/nội dung bị bảo vệ.
         "these tweets are protected",
+        "these posts are protected",
         "this account owner limits who can view",
     ),
     # BLOCKED/CHALLENGE: arkose/funcaptcha, xác minh con người.

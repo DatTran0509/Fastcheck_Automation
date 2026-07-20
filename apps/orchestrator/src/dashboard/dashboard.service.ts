@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { Platform, ProfileStatus } from '@fastcheck/shared';
+import { JobStatus, Platform, ProfileStatus } from '@fastcheck/shared';
 import { jobRepo, logRepo, profileRepo, type DB } from '@fastcheck/db';
 import type { OrchestratorEnv } from '@fastcheck/config';
 import type {
@@ -10,8 +10,12 @@ import type {
   DashboardRatio,
   DashboardSnapshot,
   DashboardStation,
+  JobHistoryResponse,
   JobProgressMessage,
 } from '@fastcheck/contracts';
+
+const toIso = (d: Date | string): string =>
+  d instanceof Date ? d.toISOString() : String(d);
 import { DB_CONN, ENV } from '../tokens.js';
 import { StationRegistryService } from '../station-registry/station-registry.service.js';
 import { CircuitBreakerService } from '../circuit/circuit-breaker.service.js';
@@ -97,6 +101,41 @@ export class DashboardService {
       circuits,
       alerts: this.deriveAlerts(ratios, pool, circuits),
       progress: [...this.progressLog].reverse(), // mới nhất trước
+    };
+  }
+
+  /**
+   * Lịch sử job có filter + phân trang (GET /dashboard/jobs) — cho bảng Kết quả (search/filter/lazy-load/export).
+   * Đọc từ check_jobs (nguồn sự thật — INV-4) + join check_log mới nhất. KHÔNG cookie/credential (INV-12).
+   */
+  async jobsHistory(f: {
+    platform?: Platform;
+    status?: JobStatus;
+    q?: string;
+    limit: number;
+    offset: number;
+  }): Promise<JobHistoryResponse> {
+    const [rows, total] = await Promise.all([
+      jobRepo.listJobs(this.db, f),
+      jobRepo.countJobs(this.db, { platform: f.platform, status: f.status, q: f.q }),
+    ]);
+    return {
+      items: rows.map((r) => ({
+        trace_id: r.trace_id,
+        target_url: r.target_url,
+        platform: r.platform,
+        status: r.status,
+        result: r.result ?? null,
+        profile_health: r.profile_health ?? null,
+        block_reason: r.block_reason ?? null,
+        response_time_ms: r.response_time_ms ?? null,
+        retry_count: r.retry_count,
+        created_at: toIso(r.created_at),
+        finished_at: r.finished_at ? toIso(r.finished_at) : null,
+      })),
+      total,
+      limit: f.limit,
+      offset: f.offset,
     };
   }
 

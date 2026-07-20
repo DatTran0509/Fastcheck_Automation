@@ -1,0 +1,347 @@
+import { useEffect, useState } from 'react';
+import { ORCH_BASE, PLATFORMS, sendJson } from '../lib/api.js';
+import { useSnapshot } from '../lib/snapshot.js';
+
+// Đoán nền tảng từ DOMAIN cookie (chống chọn nhầm nền tảng → chạy sai kịch bản login). Chỉ CẢNH BÁO.
+function detectPlatformFromCookie(raw: string): string | null {
+  if (!raw.trim()) return null;
+  let text = raw;
+  try {
+    const arr: unknown = JSON.parse(raw);
+    if (Array.isArray(arr)) {
+      text = arr
+        .map((c) => (c && typeof c === 'object' ? String((c as { domain?: unknown }).domain ?? '') : ''))
+        .join(' ');
+    }
+  } catch {
+    /* chuỗi k=v thô: dùng nguyên văn */
+  }
+  const t = text.toLowerCase();
+  if (t.includes('x.com') || t.includes('twitter.com')) return 'TWITTER';
+  if (t.includes('tiktok.com')) return 'TIKTOK';
+  if (t.includes('facebook.com')) return 'FACEBOOK';
+  if (t.includes('youtube.com') || t.includes('google.com')) return 'YOUTUBE';
+  return null;
+}
+
+const INFO_PLATFORMS = new Set(['TIKTOK', 'TWITTER']); // login-by-info chỉ TikTok & X (spec §4.4)
+
+// Nhãn thao tác + nhãn field cho BẢNG kết quả (thay vì JSON thô — dễ đọc cho operator).
+const ACTION_LABEL: Record<string, string> = {
+  'create-profile': 'Tạo profile',
+  'open-browser': 'Mở browser',
+  'close-browser': 'Tắt browser',
+  'run-login': 'Chạy login',
+  'register-account': 'Nạp tài khoản vào pool',
+};
+const FIELD_LABEL: Record<string, string> = {
+  detail: 'Chi tiết',
+  profile_id: 'Profile',
+  gemlogin_profile_id: 'GemLogin id',
+  command_id: 'Command',
+  station_id: 'Station',
+  platform: 'Nền tảng',
+  status: 'Trạng thái',
+  has_cookie: 'Có cookie',
+};
+
+interface ActResult {
+  ok: boolean;
+  status: number;
+  name: string;
+  data: unknown;
+}
+
+function renderValue(key: string, v: unknown): JSX.Element | string {
+  if (v == null || v === '') return '—';
+  if (typeof v === 'boolean')
+    return <span className={`badge ${v ? 'ok' : 'blocked'}`}>{v ? 'có' : 'không'}</span>;
+  // `detail` là kết luận có nghĩa của lệnh (LOGGED_IN, cookie_dead, gemlogin_error…) → làm nổi bật.
+  if (key === 'detail') return <span className="badge inconclusive">{String(v)}</span>;
+  if (key.endsWith('_id')) return <span className="mono">{String(v)}</span>;
+  return String(v);
+}
+
+/** Hiển thị phản hồi lệnh dưới dạng BẢNG (không JSON thô). KHÔNG chứa cookie/credential (INV-12). */
+function ResultPanel({ ok, status, name, data }: ActResult): JSX.Element {
+  const label = ACTION_LABEL[name] ?? name;
+  const isObj = data !== null && typeof data === 'object';
+  const entries = isObj
+    ? Object.entries(data as Record<string, unknown>).filter(([k]) => k !== 'ok')
+    : [];
+  return (
+    <div className={`result-panel ${ok ? 'ok' : 'err'}`}>
+      <div className="result-panel-head">
+        <span className="result-icon">{ok ? '✅' : '❌'}</span>
+        <b>{label}</b>
+        <span className={`badge ${ok ? 'done' : 'blocked'}`}>{ok ? 'Thành công' : 'Thất bại'}</span>
+        <span className="muted mono">HTTP {status || '—'}</span>
+      </div>
+      {isObj ? (
+        <dl className="result-fields">
+          {entries.map(([k, v]) => (
+            <div className="result-row" key={k}>
+              <dt>{FIELD_LABEL[k] ?? k}</dt>
+              <dd>{renderValue(k, v)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <div className="result-message">{String(data)}</div>
+      )}
+    </div>
+  );
+}
+
+/** Bảng điều khiển: tạo/mở/tắt profile, chạy login (cookie/info), nạp tài khoản vào pool (Station Mgmt — mục 2). */
+export function AccountControls({ onRegistered }: { onRegistered?: () => void }): JSX.Element {
+  const { snap } = useSnapshot();
+  const stations = snap?.stations ?? [];
+
+  const [sid, setSid] = useState('');
+  const [platform, setPlatform] = useState<string>('TIKTOK');
+  const [gemId, setGemId] = useState('');
+  const [method, setMethod] = useState<'COOKIE' | 'INFO'>('COOKIE');
+  const [cookie, setCookie] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [otp, setOtp] = useState('');
+  const [label, setLabel] = useState('');
+  const [proxy, setProxy] = useState('');
+  const [verify, setVerify] = useState(true);
+
+  const [busy, setBusy] = useState<string | null>(null);
+  const [result, setResult] = useState<ActResult | null>(null);
+
+  useEffect(() => {
+    if (!sid && stations.length > 0) setSid(stations[0].station_id);
+  }, [stations, sid]);
+
+  const act = async (
+    name: string,
+    fn: () => Promise<{ ok: boolean; status: number; data: unknown }>,
+    after?: () => void,
+  ) => {
+    setBusy(name);
+    setResult(null);
+    try {
+      const r = await fn();
+      // Lệnh THẤT BẠI vẫn trả HTTP 200 với body {ok:false} (vd login sai, GemLogin lỗi) → hiệu lực ok phải
+      // xét CẢ ok cấp-lệnh trong body, không chỉ HTTP status (nếu không sẽ hiện "Thành công" oan).
+      const bodyOk = r.data && typeof r.data === 'object' ? (r.data as { ok?: unknown }).ok : undefined;
+      const ok = r.ok && bodyOk !== false;
+      setResult({ ok, status: r.status, name, data: r.data });
+      if (ok) after?.();
+    } catch (e) {
+      setResult({ ok: false, status: 0, name, data: (e as Error).message });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const infoMode = method === 'INFO';
+  const disabled = !!busy;
+  const cookiePlatform = detectPlatformFromCookie(cookie);
+  const cookieMismatch = cookiePlatform != null && cookiePlatform !== platform;
+  const infoSupported = INFO_PLATFORMS.has(platform);
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>Nạp tài khoản & đăng nhập</h2>
+        <span className="card-hint">Tạo/mở/tắt profile · chạy login (cookie/info) · nạp vào pool</span>
+      </div>
+
+      <div className="form-grid">
+        <div className="field">
+          <label>Station</label>
+          <select value={sid} onChange={(e) => setSid(e.target.value)}>
+            {stations.length === 0 && <option value="">— chưa có station —</option>}
+            {stations.map((s) => (
+              <option key={s.station_id} value={s.station_id}>
+                {s.name ?? s.station_id.slice(0, 8)} · {s.status}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Nền tảng</label>
+          <select value={platform} onChange={(e) => setPlatform(e.target.value)}>
+            {PLATFORMS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>GemLogin profile id</label>
+          <input value={gemId} onChange={(e) => setGemId(e.target.value)} placeholder="vd 1, 4, 12…" />
+        </div>
+        <div className="field">
+          <label>Phương thức login</label>
+          <select value={method} onChange={(e) => setMethod(e.target.value as 'COOKIE' | 'INFO')}>
+            <option value="COOKIE">COOKIE (cả 4 nền tảng)</option>
+            <option value="INFO">INFO — user/pass (chỉ TikTok & X)</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="field">
+        <label>Cookie (JSON hoặc chuỗi k=v) — để nạp/đăng nhập bằng cookie</label>
+        <textarea
+          value={cookie}
+          onChange={(e) => setCookie(e.target.value)}
+          placeholder='[{"name":"sessionid","value":"..."}, ...]'
+        />
+        {cookieMismatch && (
+          <div className="alert warn" style={{ marginTop: 10 }}>
+            ⚠️ Cookie có vẻ của <b>{cookiePlatform}</b> nhưng bạn đang chọn nền tảng <b>{platform}</b> — sẽ chạy
+            SAI kịch bản login.
+            <button className="sm" style={{ marginLeft: 12 }} onClick={() => cookiePlatform && setPlatform(cookiePlatform)}>
+              Đổi sang {cookiePlatform}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Đăng nhập bằng TÀI KHOẢN (INFO) — LUÔN hiện để dễ thấy; chỉ bật khi chọn Phương thức login = INFO. */}
+      <div className="field">
+        <label>Đăng nhập bằng tài khoản (username / mật khẩu) — chỉ TikTok &amp; X</label>
+        {!infoMode && (
+          <div className="card-hint" style={{ marginBottom: 8 }}>
+            Muốn đăng nhập bằng user/mật khẩu? Đổi <b>Phương thức login = INFO</b> ở trên để bật các ô này.
+          </div>
+        )}
+        {infoMode && !infoSupported && (
+          <div className="alert warn" style={{ marginBottom: 8 }}>
+            ⚠️ <b>{platform}</b> chỉ hỗ trợ đăng nhập bằng <b>cookie</b>. Info (user/mật khẩu) chỉ dùng cho TikTok &amp; X.
+          </div>
+        )}
+        <div className="form-grid">
+          <div>
+            <label>Username</label>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" disabled={!infoMode} />
+          </div>
+          <div>
+            <label>Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="off"
+              disabled={!infoMode}
+            />
+          </div>
+          <div>
+            <label>OTP secret (TOTP base32 — nếu bật 2FA)</label>
+            <input
+              value={otp}
+              onChange={(e) => setOtp(e.target.value)}
+              placeholder="tuỳ chọn"
+              autoComplete="off"
+              disabled={!infoMode}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="form-grid">
+        <div className="field">
+          <label>Nhãn tài khoản (account_label)</label>
+          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="vd tt-01" />
+        </div>
+        <div className="field">
+          <label>Proxy (tuỳ chọn)</label>
+          <input value={proxy} onChange={(e) => setProxy(e.target.value)} placeholder="http://user:pass@host:port" />
+        </div>
+        <div className="field">
+          <label>Verify trước khi nạp</label>
+          <label className="row" style={{ marginTop: 4, fontWeight: 500, color: 'var(--text)' }}>
+            <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} style={{ width: 'auto' }} />
+            Kiểm tra đã đăng nhập đúng nền tảng (chống nạp sai → cooldown loạn)
+          </label>
+        </div>
+      </div>
+
+      <div className="row" style={{ marginTop: 6 }}>
+        <button
+          disabled={disabled || !sid}
+          onClick={() =>
+            void act('create-profile', () =>
+              sendJson('POST', `${ORCH_BASE}/stations/${sid}/profiles`, {
+                platform,
+                account_label: label || `fastcheck-${platform}`,
+                proxy: proxy || undefined,
+              }),
+            )
+          }
+        >
+          Tạo profile
+        </button>
+        <button
+          disabled={disabled || !sid || !gemId}
+          onClick={() =>
+            void act('open-browser', () =>
+              sendJson('POST', `${ORCH_BASE}/stations/${sid}/browser/open`, { gemlogin_profile_id: gemId }),
+            )
+          }
+        >
+          Mở browser
+        </button>
+        <button
+          disabled={disabled || !sid || !gemId}
+          onClick={() =>
+            void act('close-browser', () =>
+              sendJson('POST', `${ORCH_BASE}/stations/${sid}/browser/close`, { gemlogin_profile_id: gemId }),
+            )
+          }
+        >
+          Tắt browser
+        </button>
+        <button
+          disabled={disabled || !sid || !gemId}
+          onClick={() =>
+            void act('run-login', () =>
+              sendJson('POST', `${ORCH_BASE}/stations/${sid}/login`, {
+                gemlogin_profile_id: gemId,
+                platform,
+                method,
+                cookie: cookie || undefined,
+                username: username || undefined,
+                password: password || undefined,
+                otp_secret: otp || undefined,
+              }),
+            )
+          }
+        >
+          Chạy login
+        </button>
+        <button
+          className="primary"
+          disabled={disabled || !gemId}
+          onClick={() =>
+            void act(
+              'register-account',
+              () =>
+                sendJson('POST', `${ORCH_BASE}/accounts`, {
+                  platform,
+                  gemlogin_profile_id: gemId,
+                  station_id: sid || undefined,
+                  account_label: label || undefined,
+                  cookie: cookie || undefined,
+                  proxy: proxy || undefined,
+                  verify,
+                }),
+              onRegistered,
+            )
+          }
+        >
+          Nạp tài khoản vào pool
+        </button>
+      </div>
+
+      {result && <ResultPanel {...result} />}
+    </section>
+  );
+}
