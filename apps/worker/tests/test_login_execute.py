@@ -44,14 +44,14 @@ def test_cookie_login_empty_cookie_is_dead_not_logged_in() -> None:
     assert r.outcome == LoginOutcome.COOKIE_DEAD
 
 
-@pytest.mark.parametrize("platform", [Platform.TIKTOK, Platform.TWITTER])
-def test_info_login_ok_for_tiktok_and_x(platform: Platform) -> None:
+@pytest.mark.parametrize("platform", [Platform.TIKTOK, Platform.TWITTER, Platform.YOUTUBE])
+def test_info_login_ok_for_tiktok_x_youtube(platform: Platform) -> None:
+    # TikTok: user/pass gốc; X & YouTube: qua Google (tài khoản Google). Tất cả → LOGGED_IN ở fake mode.
     r = _run(platform=platform, method="INFO", username="user", password="pass")
     assert r.outcome == LoginOutcome.LOGGED_IN
 
 
-@pytest.mark.parametrize("platform", [Platform.FACEBOOK, Platform.YOUTUBE])
-def test_info_login_unsupported_for_fb_yt_raises(platform: Platform) -> None:
-    # FB & YT KHÔNG hỗ trợ login-by-info (đúng phạm vi Excel) → LoginError (báo ra, không đoán).
+def test_info_login_unsupported_for_facebook_raises() -> None:
+    # Facebook chỉ login-by-cookie → yêu cầu info → LoginError (báo ra, không đoán).
     with pytest.raises(LoginError):
-        _run(platform=platform, method="INFO", username="user", password="pass")
+        _run(platform=Platform.FACEBOOK, method="INFO", username="user", password="pass")

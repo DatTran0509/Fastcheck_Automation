@@ -16,7 +16,7 @@ from fastcheck_worker.login import (
     get_login_strategy,
 )
 from fastcheck_worker.login.base import LoginOutcome
-from fastcheck_worker.login.forms import TIKTOK_LOGIN, TWITTER_LOGIN
+from fastcheck_worker.login.forms import TIKTOK_LOGIN, TWITTER_LOGIN, YOUTUBE_LOGIN
 
 
 class FakeLoginPage:
@@ -50,6 +50,20 @@ class FakeLoginPage:
         if selector in self._advance_on and self._i < len(self._states) - 1:
             self._i += 1
         return True
+
+    def press_enter(self, selector: str) -> bool:  # noqa: ARG002 — Enter = submit bước → sang state kế
+        if self._i < len(self._states) - 1:
+            self._i += 1
+        return True
+
+    def click_text(self, text: str) -> bool:  # noqa: ARG002 — nút "Continue with Google"/"Use password" coi như bấm được
+        return True
+
+    def use_latest_tab(self) -> bool:
+        return False
+
+    def use_main_tab(self) -> None:
+        return None
 
     def wait_present(self, selector: str, timeout: float) -> bool:
         return True
@@ -143,20 +157,48 @@ def test_info_login_otp_with_secret_logs_in() -> None:
     assert result.outcome == LoginOutcome.LOGGED_IN
 
 
-def test_info_login_twitter_next_step_then_login() -> None:
-    # X có bước "Next": state0 (username) → next → state1 (password) → submit → state2 (verify).
+@pytest.mark.parametrize("platform", [Platform.TWITTER, Platform.YOUTUBE])
+def test_info_login_via_google_logs_in(platform: Platform) -> None:
+    # X & YouTube: method INFO → đăng nhập QUA GOOGLE (email → enter → password → enter → verify guard).
+    spec = {Platform.TWITTER: TWITTER_LOGIN, Platform.YOUTUBE: YOUTUBE_LOGIN}[platform]
     page = FakeLoginPage(
-        states=[set(), set(), {TWITTER_LOGIN.verify_selectors[0]}],
-        advance_on=(TWITTER_LOGIN.next_selector, TWITTER_LOGIN.submit_selector),
+        states=[set(), set(), {spec.verify_selectors[0]}], url="https://accounts.google.com/"
     )
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
-        page, Credential(method=LoginMethod.INFO, username="u", password="p")
+    result = get_login_strategy(platform, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
     )
     assert result.outcome == LoginOutcome.LOGGED_IN
 
 
-@pytest.mark.parametrize("platform", [Platform.FACEBOOK, Platform.YOUTUBE])
-def test_info_login_not_supported_for_facebook_youtube(platform: Platform) -> None:
-    # spec §4.4 / Excel: login-by-info CHỈ TikTok & X. FB/YT yêu cầu info → LoginError (báo ra).
+def test_info_login_google_blocked_when_no_password_field() -> None:
+    # Google chặn browser tự động → sau email KHÔNG hiện ô mật khẩu → BLOCKED (báo rõ, không đoán — INV-1).
+    class _NoPasswordPage(FakeLoginPage):
+        def wait_present(self, selector: str, timeout: float) -> bool:  # noqa: ARG002
+            return False  # ô mật khẩu Google không bao giờ hiện
+
+    page = _NoPasswordPage(states=[set()], url="https://accounts.google.com/")
+    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
+    )
+    assert result.outcome == LoginOutcome.BLOCKED
+    assert result.detail == "google_blocked_or_verify"
+
+
+def test_info_login_tiktok_form_error_when_field_missing() -> None:
+    # TikTok (login gốc): ô không khớp → fill False → FORM_ERROR + bước hỏng rõ (không COOKIE_DEAD oan).
+    class _NoFieldPage(FakeLoginPage):
+        def fill(self, selector: str, text: str) -> bool:  # noqa: ARG002
+            return False
+
+    page = _NoFieldPage(states=[set()], url="https://www.tiktok.com/login")
+    result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="u", password="p")
+    )
+    assert result.outcome == LoginOutcome.FORM_ERROR
+    assert result.detail == "username_field_not_found"
+
+
+def test_info_login_not_supported_for_facebook() -> None:
+    # Facebook chỉ login-by-cookie → yêu cầu info → LoginError (báo ra, không đoán).
     with pytest.raises(LoginError):
-        get_login_strategy(platform, LoginMethod.INFO)
+        get_login_strategy(Platform.FACEBOOK, LoginMethod.INFO)

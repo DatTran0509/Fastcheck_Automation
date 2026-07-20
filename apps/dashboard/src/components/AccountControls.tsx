@@ -24,7 +24,9 @@ function detectPlatformFromCookie(raw: string): string | null {
   return null;
 }
 
-const INFO_PLATFORMS = new Set(['TIKTOK', 'TWITTER']); // login-by-info chỉ TikTok & X (spec §4.4)
+// login-by-info: TikTok (user/pass gốc), X & YouTube (qua tài khoản GOOGLE). Facebook chỉ cookie.
+const INFO_PLATFORMS = new Set(['TIKTOK', 'TWITTER', 'YOUTUBE']);
+const GOOGLE_INFO_PLATFORMS = new Set(['TWITTER', 'YOUTUBE']); // INFO = đăng nhập bằng tài khoản Google
 
 // Nhãn thao tác + nhãn field cho BẢNG kết quả (thay vì JSON thô — dễ đọc cho operator).
 const ACTION_LABEL: Record<string, string> = {
@@ -109,6 +111,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
   const [label, setLabel] = useState('');
   const [proxy, setProxy] = useState('');
   const [verify, setVerify] = useState(true);
+  const [showPw, setShowPw] = useState(false);
 
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<ActResult | null>(null);
@@ -144,6 +147,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
   const cookiePlatform = detectPlatformFromCookie(cookie);
   const cookieMismatch = cookiePlatform != null && cookiePlatform !== platform;
   const infoSupported = INFO_PLATFORMS.has(platform);
+  const infoViaGoogle = GOOGLE_INFO_PLATFORMS.has(platform); // X/YouTube: INFO = tài khoản Google
 
   return (
     <section className="card">
@@ -182,7 +186,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           <label>Phương thức login</label>
           <select value={method} onChange={(e) => setMethod(e.target.value as 'COOKIE' | 'INFO')}>
             <option value="COOKIE">COOKIE (cả 4 nền tảng)</option>
-            <option value="INFO">INFO — user/pass (chỉ TikTok & X)</option>
+            <option value="INFO">INFO — TikTok: user/pass · X &amp; YouTube: tài khoản Google</option>
           </select>
         </div>
       </div>
@@ -207,15 +211,23 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
 
       {/* Đăng nhập bằng TÀI KHOẢN (INFO) — LUÔN hiện để dễ thấy; chỉ bật khi chọn Phương thức login = INFO. */}
       <div className="field">
-        <label>Đăng nhập bằng tài khoản (username / mật khẩu) — chỉ TikTok &amp; X</label>
+        <label>
+          Đăng nhập bằng tài khoản — TikTok: user/pass · X &amp; YouTube: <b>tài khoản Google</b>
+        </label>
         {!infoMode && (
           <div className="card-hint" style={{ marginBottom: 8 }}>
             Muốn đăng nhập bằng user/mật khẩu? Đổi <b>Phương thức login = INFO</b> ở trên để bật các ô này.
           </div>
         )}
+        {infoMode && infoViaGoogle && (
+          <div className="alert warn" style={{ marginBottom: 8 }}>
+            ℹ️ <b>{platform}</b> đăng nhập qua <b>Google</b>: nhập <b>email + mật khẩu TÀI KHOẢN GOOGLE</b> (không phải
+            mật khẩu {platform}). Lưu ý Google chặn browser tự động khá mạnh — cookie vẫn là cách ổn định nhất.
+          </div>
+        )}
         {infoMode && !infoSupported && (
           <div className="alert warn" style={{ marginBottom: 8 }}>
-            ⚠️ <b>{platform}</b> chỉ hỗ trợ đăng nhập bằng <b>cookie</b>. Info (user/mật khẩu) chỉ dùng cho TikTok &amp; X.
+            ⚠️ <b>{platform}</b> chỉ hỗ trợ đăng nhập bằng <b>cookie</b>. Facebook không hỗ trợ user/mật khẩu.
           </div>
         )}
         <div className="form-grid">
@@ -225,13 +237,25 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           </div>
           <div>
             <label>Password</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="off"
-              disabled={!infoMode}
-            />
+            <div className="pw-wrap">
+              <input
+                type={showPw ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="off"
+                disabled={!infoMode}
+              />
+              <button
+                type="button"
+                className="pw-toggle"
+                onClick={() => setShowPw((v) => !v)}
+                disabled={!infoMode}
+                aria-label={showPw ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                title={showPw ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+              >
+                {showPw ? '🙈' : '👁'}
+              </button>
+            </div>
           </div>
           <div>
             <label>OTP secret (TOTP base32 — nếu bật 2FA)</label>

@@ -49,17 +49,60 @@ class InfoLogin:
         if not credential.username or not credential.password:
             raise LoginError("login-by-info cần username + password")
         spec = self._spec
+        # Marker phiên bản để xác nhận đang chạy code MỚI (nếu vẫn thấy log cũ → chưa restart worker).
+        logger.info("info-login v2 (luồng use-password): goto %s", spec.login_url)
         page.goto(spec.login_url)
 
-        page.fill(spec.username_selector, credential.username)  # gõ mô phỏng người (page.fill lo)
-        # X: bước trung gian "Next" trước khi hiện ô mật khẩu.
-        if spec.next_selector:
-            page.click(spec.next_selector)
+        # Mỗi bước KIỂM tra kết quả — KHÔNG nuốt (INV-1): không tìm thấy ô/nút = lỗi tự động hoá → báo RÕ bước hỏng.
+        if not page.fill(spec.username_selector, credential.username):  # gõ mô phỏng người (page.fill lo)
+            return self._form_error("username_field_not_found")
+
+        # X: THỨ TỰ ĐÚNG (người dùng chỉ) — nhập tk → Continue → "Use password" → mới hiện ô mật khẩu.
+        # KHÔNG cố điền mật khẩu trước khi bấm "Use password" (đó là lỗi khiến kẹt ở "Confirm your account").
+        if spec.next_selector or spec.next_texts:
+            if not self._advance(page, spec.next_selector, spec.next_texts, spec.username_selector):
+                return self._form_error("next_button_not_found")
+            # X hiện "Confirm your account" → BẤM "Use password" để sang bước nhập mật khẩu.
+            if spec.use_password_text and page.click_text(spec.use_password_text):
+                logger.info("info-login: đã bấm 'Use password'")
             page.wait_present(spec.password_selector, _STEP_TIMEOUT)
-        page.fill(spec.password_selector, credential.password)
-        page.click(spec.submit_selector)
+
+        if not page.fill(spec.password_selector, credential.password):
+            # Không vào được ô mật khẩu: X vẫn kẹt ở bước xác minh danh tính (challenge chống bot) — không "Use
+            # password" được → BÁO RÕ (INV-1, không COOKIE_DEAD oan). Đường tin cậy khi bị challenge: cookie.
+            if page.has_element(*spec.otp_selectors):
+                logger.warning(
+                    "info-login: X vẫn bắt xác minh danh tính (không vào được ô mật khẩu) — cần cookie sống hoặc can thiệp tay"
+                )
+                return LoginResult(
+                    LoginOutcome.BLOCKED, LoginMethod.INFO, detail="identity_confirmation_required"
+                )
+            return self._form_error("password_field_not_found")
+        # Submit (nút "Continue"/"Log in"/"Đăng nhập"): selector → text → Enter.
+        if not self._advance(page, spec.submit_selector, spec.submit_texts, spec.password_selector):
+            return self._form_error("submit_button_not_found")
 
         return self._resolve_after_submit(page, credential)
+
+    def _advance(
+        self, page: LoginPage, selector: str, texts: tuple[str, ...], enter_field: str
+    ) -> bool:
+        """Chuyển bước bằng ENTER trong `enter_field` TRƯỚC (X submit form bằng Enter — nhanh & chắc, khỏi tìm
+        nút Continue/Login vốn đổi testid liên tục). Không Enter được (ô không có) → mới thử nút theo selector/text."""
+        if page.press_enter(enter_field):
+            return True
+        if selector and page.click(selector):
+            return True
+        return any(page.click_text(t) for t in texts)
+
+    def _form_error(self, step: str) -> LoginResult:
+        """Không thao tác được form (selector không khớp). Báo RÕ bước hỏng — execute._run_real sẽ log DIAG
+        cấu trúc form thật để cập nhật selector. KHÔNG phải COOKIE_DEAD (cookie không liên quan info-login)."""
+        logger.warning(
+            "info-login DỪNG ở '%s' (không khớp selector) — X/TikTok đổi DOM hoặc chặn bot; xem DIAG để sửa selector",
+            step,
+        )
+        return LoginResult(LoginOutcome.FORM_ERROR, LoginMethod.INFO, detail=step)
 
     def _resolve_after_submit(self, page: LoginPage, credential: Credential) -> LoginResult:
         spec = self._spec

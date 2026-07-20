@@ -17,12 +17,23 @@ interface Pending {
 export class PendingCommandsService {
   private readonly pending = new Map<string, Pending>();
 
-  /** Chờ ack cho `commandId` (thuộc `stationId`), tối đa `timeoutMs`. Reject nếu quá hạn (station treo). */
+  /**
+   * Chờ ack cho `commandId` (thuộc `stationId`), tối đa `timeoutMs`. Quá hạn → RESOLVE ack ok=false (không
+   * throw): lệnh chạy lâu (vd login-by-info bị X challenge/captcha) là KẾT QUẢ CÓ NGHĨA, không phải lỗi server.
+   * Trả ok=false + lý do rõ để dashboard hiện ❌ (thay vì HTTP 500 khó hiểu). Giống rejectStation (fail loud).
+   */
   waitFor(commandId: string, stationId: string, timeoutMs: number): Promise<CommandAckMessage> {
-    return new Promise<CommandAckMessage>((resolve, reject) => {
+    return new Promise<CommandAckMessage>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(commandId);
-        reject(new Error(`command_ack timeout sau ${timeoutMs}ms (command_id=${commandId})`));
+        resolve({
+          type: 'command_ack',
+          command_id: commandId,
+          station_id: stationId,
+          ok: false,
+          detail: `command_ack_timeout: station không phản hồi trong ${timeoutMs}ms (lệnh có thể vẫn đang chạy — vd login bị challenge/captcha; cân nhắc dùng cookie)`,
+          profile_id: null,
+        });
       }, timeoutMs);
       this.pending.set(commandId, { stationId, resolve, timer });
     });

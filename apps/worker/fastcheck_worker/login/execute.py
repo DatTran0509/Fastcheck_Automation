@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..contracts import Platform
 from . import get_login_strategy
-from .base import Credential, LoginMethod, LoginResult, LoginStrategy
+from .base import Credential, LoginMethod, LoginOutcome, LoginResult, LoginStrategy
 from .forms import (
     FACEBOOK_LOGIN,
     LoginFormSpec,
@@ -81,7 +81,14 @@ def _run_real(
         # login-by-cookie: nạp cookie TRƯỚC khi strategy điều hướng (INV-2).
         if credential.method == LoginMethod.COOKIE and credential.cookie:
             login_page.set_cookies(credential.cookie, spec.home_url)
-        return strategy.login(login_page, credential)
+        result = strategy.login(login_page, credential)
+        # DIAG: form login đổi DOM / chặn bot → dump cấu trúc input/button THẬT (không giá trị — INV-12) để
+        # cập nhật selector đúng thay vì đoán. Chụp TRƯỚC khi finally đóng browser.
+        if result.outcome == LoginOutcome.FORM_ERROR:
+            logger.warning(
+                "DIAG login form (%s): %s", result.detail, login_page.form_diagnostics()
+            )
+        return result
     finally:
         # Đóng browser sau login (INV-9) — session đã lưu ở profile GemLogin, không cần giữ mở.
         try:
@@ -109,9 +116,17 @@ class _FakeLoginPage:
             # cookie có → guard pass (logged in); cookie rỗng → không thấy guard (COOKIE_DEAD).
             states = [{verify}] if credential.cookie else [set()]
             return cls(states, spec.home_url, ())
-        # INFO: state đầu có ô user/pass/next để fill/click; sau submit → thấy guard (LOGGED_IN).
-        first = {spec.username_selector, spec.password_selector, spec.next_selector} - {""}
-        return cls([first, {verify}], spec.home_url, (spec.submit_selector,))
+        # INFO qua GOOGLE (X/YouTube): email → enter → password → enter → verify (click_text nút Google = True).
+        if spec.google_button_texts or spec.google_login_url:
+            from .google_login import _GOOGLE_EMAIL, _GOOGLE_PASSWORD  # noqa: PLC0415 — tránh vòng import
+
+            return cls([{_GOOGLE_EMAIL}, {_GOOGLE_PASSWORD}, {verify}], spec.home_url, ())
+        # INFO gốc (TikTok): user+pass cùng trang → enter → verify. press_enter (fake) advance sang state kế.
+        if spec.next_selector or spec.next_texts:
+            states = [{spec.username_selector}, {spec.password_selector}, {verify}]
+        else:
+            states = [{spec.username_selector, spec.password_selector}, {verify}]
+        return cls(states, spec.home_url, (spec.submit_selector,))
 
     @property
     def current_url(self) -> str:
@@ -138,6 +153,20 @@ class _FakeLoginPage:
         if selector in self._advance_on and self._i < len(self._states) - 1:
             self._i += 1
         return True
+
+    def press_enter(self, selector: str) -> bool:  # noqa: ARG002 — Enter = submit bước → sang state kế
+        if self._i < len(self._states) - 1:
+            self._i += 1
+        return True
+
+    def click_text(self, text: str) -> bool:  # noqa: ARG002 — nút "Continue with Google"/"Use password" coi như bấm được
+        return True
+
+    def use_latest_tab(self) -> bool:  # fake: không mô phỏng popup
+        return False
+
+    def use_main_tab(self) -> None:
+        return None
 
     def wait_present(self, selector: str, timeout: float) -> bool:  # noqa: ARG002
         return True

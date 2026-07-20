@@ -660,6 +660,29 @@ button.sm.danger:hover:not(:disabled) {
   background: rgba(239, 68, 68, 0.12);
   border-color: rgba(239, 68, 68, 0.7);
 }
+.pw-wrap {
+  position: relative;
+}
+.pw-wrap input {
+  padding-right: 40px;
+}
+.pw-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 30px;
+  padding: 4px 0;
+  background: transparent;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.pw-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 .reason {
   font-size: 12px;
   color: #ffcf7a;
