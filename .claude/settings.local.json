@@ -19,7 +19,19 @@
       "Bash(pnpm db:migrate)",
       "Bash(docker exec *)",
       "Bash(pnpm dev *)",
-      "Bash(pnpm --filter @fastcheck/contracts build)"
+      "Bash(pnpm --filter @fastcheck/contracts build)",
+      "Bash(uv run *)",
+      "Bash(pnpm contracts:schema)",
+      "Bash(pnpm worker:gen)",
+      "Bash(pnpm --filter @fastcheck/contracts run typecheck)",
+      "Bash(pnpm --filter orchestrator run typecheck)",
+      "Bash(pnpm --filter @fastcheck/contracts run build)",
+      "Bash(pnpm --filter @fastcheck/contracts run test)",
+      "Bash(pnpm --filter orchestrator run test)",
+      "Bash(pnpm --filter @fastcheck/contracts run lint)",
+      "Bash(pnpm --filter orchestrator run lint)",
+      "Bash(git check-ignore *)",
+      "Bash(pnpm --filter dashboard run typecheck)"
     ]
   }
 }

@@ -1,13 +1,18 @@
-"""Login qua GOOGLE ("Continue with Google") cho X & YouTube — dùng TÀI KHOẢN GOOGLE (email/mật khẩu Google).
+"""Login qua GOOGLE ("Continue with Google") cho TikTok & YouTube — dùng TÀI KHOẢN GOOGLE (email/mật khẩu).
 
-Vì sao: login gốc của X hay vướng "Confirm your account"/captcha (DOM đổi liên tục); form Google ổn định hơn.
+Vì sao: login gốc của các platform này hay vướng captcha/challenge (DOM đổi liên tục); form Google ổn định hơn.
 Luồng (đúng thao tác tay người dùng):
-  X : mở trang login X → click "Continue with Google" → (Google mở tab/popup) → email → Enter → mật khẩu → Enter
-  YT: vào THẲNG Google sign-in (YouTube = Google) → email → Enter → mật khẩu → Enter
+  TikTok: mở trang login TikTok → click "Continue with Google" → (Google mở tab/popup) → email → Enter →
+          mật khẩu → Enter → (TÙY CHỌN) Google hỏi mã 2FA nếu tài khoản Google bật authenticator app
+  YT    : vào THẲNG Google sign-in (YouTube = Google) → email → Enter → mật khẩu → Enter → (tùy chọn) 2FA
 Sau đó verify guard đăng nhập trên platform (cookie-first như CookieLogin — INV-8). KHÔNG log credential (INV-12).
 
 Google chặn browser tự động RẤT mạnh ("This browser or app may not be secure"): nếu sau khi nhập email mà
 KHÔNG hiện ô mật khẩu → coi là BLOCKED (báo RÕ, không đoán — INV-1), đường tin cậy vẫn là login-by-cookie.
+
+2FA Google là TÙY CHỌN (chỉ xảy ra nếu tài khoản Google đó bật authenticator app) — có otp_secret thì tự
+sinh mã điền tiếp; không có thì báo OTP_REQUIRED; không thấy màn hình 2FA thì bỏ qua bước này (INV-1: nhánh
+rõ ràng có/không, không đoán).
 """
 
 from __future__ import annotations
@@ -15,16 +20,22 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
-from .base import Credential, LoginError, LoginMethod, LoginOutcome, LoginPage, LoginResult
+from .base import Credential, LoginError, LoginMethod, LoginOutcome, LoginPage, LoginResult, generate_totp
 from .forms import LoginFormSpec
 
 logger = logging.getLogger("fastcheck.worker.login")
 
 # Chờ tối đa mỗi bước (giây) — tổng < timeout job (INV-9) & < command_ack_timeout orchestrator.
 _STEP_TIMEOUT = 15.0
-# Selector form Google (CHUNG cho mọi platform — đây là trang của Google, không phải của X/YT). Fallback id cũ.
+# 2FA Google là bước TÙY CHỌN — ngắn hơn _STEP_TIMEOUT để không giữ MỌI lần login chờ thêm nếu tài khoản
+# không bật 2FA (đa số trường hợp).
+_GOOGLE_OTP_TIMEOUT = 5.0
+# Selector form Google (CHUNG cho mọi platform — đây là trang của Google, không phải của TikTok/YT). Fallback id cũ.
 _GOOGLE_EMAIL = 'input[type="email"], #identifierId'
 _GOOGLE_PASSWORD = 'input[type="password"], input[name="Passwd"]'
+# Màn hình 2FA (TOTP) của Google — CHƯA kiểm chứng trên DOM thật (không có quyền truy cập trực tiếp lúc viết);
+# xác nhận lại qua form_diagnostics() nếu OTP không được nhận diện đúng, rồi cập nhật selector (INV-7).
+_GOOGLE_OTP = 'input#totpPin, input[name="totpPin"], input[type="tel"]'
 
 
 def _redirected_to_login(url: str, markers: tuple[str, ...]) -> bool:
@@ -56,13 +67,13 @@ class GoogleLogin:
             raise LoginError("đăng nhập Google cần email + mật khẩu Google")
         spec = self._spec
         start_url = spec.google_login_url or spec.login_url
-        logger.info("google-login v1 (X/YouTube qua Google): mở %s", start_url)
+        logger.info("google-login v2 (TikTok/YouTube qua Google, 2FA tùy chọn): mở %s", start_url)
         page.goto(start_url)
 
-        # X: click "Continue with Google" để mở OAuth (YouTube: vào thẳng Google, google_button_texts rỗng).
+        # TikTok: click "Continue with Google" để mở OAuth (YouTube: vào thẳng Google, google_button_texts rỗng).
         if spec.google_button_texts:
             if not any(page.click_text(t) for t in spec.google_button_texts):
-                logger.warning("google-login: không thấy nút 'Continue with Google' — X đổi giao diện?")
+                logger.warning("google-login: không thấy nút 'Continue with Google' — platform đổi giao diện?")
                 return LoginResult(
                     LoginOutcome.FORM_ERROR, LoginMethod.INFO, detail="google_button_not_found"
                 )
@@ -90,9 +101,31 @@ class GoogleLogin:
             )
         page.press_enter(_GOOGLE_PASSWORD)
 
+        # 2FA Google TÙY CHỌN (chỉ khi tài khoản Google đó bật authenticator app). `wait_present` cho DOM
+        # kịp render (không dùng giá trị trả về để quyết định — bước này KHÔNG bắt buộc phải xuất hiện),
+        # `has_element` (timeout=0) mới là tín hiệu quyết định nhánh (INV-1: rõ có/không, không đoán).
+        page.wait_present(_GOOGLE_OTP, _GOOGLE_OTP_TIMEOUT)
+        if page.has_element(_GOOGLE_OTP):
+            otp_result = self._handle_google_otp(page, credential)
+            if otp_result is not None:
+                return otp_result
+
         # Xong OAuth ở popup → quay về tab platform để verify.
         page.use_main_tab()
         return self._verify(page)
+
+    def _handle_google_otp(self, page: LoginPage, credential: Credential) -> LoginResult | None:
+        """Google bắt 2FA (tài khoản Google bật authenticator app). Có otp_secret → tự sinh TOTP điền tiếp
+        rồi để `_verify()` xác nhận kết quả cuối; không có secret → OTP_REQUIRED (cần người, không đoán —
+        INV-1). Trả None nghĩa là đã điền code, luồng tiếp tục bình thường."""
+        if not credential.otp_secret:
+            return LoginResult(
+                LoginOutcome.OTP_REQUIRED, LoginMethod.INFO, detail="google_otp_needed_no_secret"
+            )
+        code = generate_totp(credential.otp_secret)
+        page.fill(_GOOGLE_OTP, code)
+        page.press_enter(_GOOGLE_OTP)
+        return None
 
     def _verify(self, page: LoginPage) -> LoginResult:
         """Verify guard đăng nhập trên platform (cookie-first, giống CookieLogin — không lệ thuộc selector giòn)."""

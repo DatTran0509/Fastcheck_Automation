@@ -386,6 +386,7 @@ class WorkerClient:
                 username=cmd.username,
                 password=cmd.password,
                 otp_secret=cmd.otp_secret,
+                confirm_username=cmd.confirm_username,
             )
             # ok=true CHỈ khi đăng nhập thật sự thành công; các outcome khác (cookie chết/captcha/OTP) là kết
             # quả CÓ NGHĨA của lệnh (đã chạy) nhưng chưa đăng nhập → ok=false + lý do (không nuốt, INV-1).

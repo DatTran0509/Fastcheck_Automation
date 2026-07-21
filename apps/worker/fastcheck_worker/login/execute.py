@@ -1,6 +1,7 @@
 """Thực thi một lệnh `login.run` (§7): Server GỌI, Client chạy kịch bản login trên browser GemLogin.
 
-Real mode: mở browser GemLogin qua adapter → attach DrissionPage → chạy strategy (cookie ×4 / info TT&X) →
+Real mode: mở browser GemLogin qua adapter → attach DrissionPage → chạy strategy (cookie ×4 / info: X gốc,
+TikTok&YT qua Google) →
 ĐÓNG browser (INV-9). Fake mode: chạy CHÍNH strategy đó trên `_FakeLoginPage` tất định (chứng minh đường
 lệnh mà không cần GemLogin — logic login đã test ở test_login.py). KHÔNG log cookie/credential (INV-12).
 """
@@ -45,6 +46,7 @@ def execute_login(
     username: str | None,
     password: str | None,
     otp_secret: str | None,
+    confirm_username: str | None = None,
 ) -> LoginResult:
     """Chạy kịch bản login → LoginResult. Ném LoginError nếu (platform, method) không hỗ trợ (fail loud)."""
     login_method = LoginMethod(method)
@@ -54,6 +56,7 @@ def execute_login(
         username=username,
         password=password,
         otp_secret=otp_secret,
+        confirm_username=confirm_username,
     )
     strategy = get_login_strategy(platform, login_method)  # FB/YT + INFO → LoginError (đúng phạm vi)
     spec = _FORMS[platform]
@@ -82,9 +85,13 @@ def _run_real(
         if credential.method == LoginMethod.COOKIE and credential.cookie:
             login_page.set_cookies(credential.cookie, spec.home_url)
         result = strategy.login(login_page, credential)
-        # DIAG: form login đổi DOM / chặn bot → dump cấu trúc input/button THẬT (không giá trị — INV-12) để
-        # cập nhật selector đúng thay vì đoán. Chụp TRƯỚC khi finally đóng browser.
-        if result.outcome == LoginOutcome.FORM_ERROR:
+        # DIAG: form login đổi DOM / chặn bot / kẹt ở "Confirm your account" → dump cấu trúc input/button THẬT
+        # (không giá trị — INV-12) để cập nhật selector đúng thay vì đoán. Chụp TRƯỚC khi finally đóng browser.
+        if result.outcome == LoginOutcome.FORM_ERROR or result.detail in (
+            "identity_confirmation_required",
+            "confirm_username_required",
+            "password_step_required",
+        ):
             logger.warning(
                 "DIAG login form (%s): %s", result.detail, login_page.form_diagnostics()
             )
@@ -116,17 +123,19 @@ class _FakeLoginPage:
             # cookie có → guard pass (logged in); cookie rỗng → không thấy guard (COOKIE_DEAD).
             states = [{verify}] if credential.cookie else [set()]
             return cls(states, spec.home_url, ())
-        # INFO qua GOOGLE (X/YouTube): email → enter → password → enter → verify (click_text nút Google = True).
+        # INFO qua GOOGLE (TikTok/YouTube): email → enter → password → enter → verify (click_text nút Google
+        # = True; không seed state OTP nên bỏ qua bước 2FA tùy chọn của Google).
         if spec.google_button_texts or spec.google_login_url:
             from .google_login import _GOOGLE_EMAIL, _GOOGLE_PASSWORD  # noqa: PLC0415 — tránh vòng import
 
             return cls([{_GOOGLE_EMAIL}, {_GOOGLE_PASSWORD}, {verify}], spec.home_url, ())
-        # INFO gốc (TikTok): user+pass cùng trang → enter → verify. press_enter (fake) advance sang state kế.
+        # INFO gốc (X, passwordless-fallback): username → Enter → password → Enter → verify. _advance nhấn Enter
+        # → advance; advance_on gồm submit_selector cho click(submit) ở _handle_otp (next_selector giữ cho chắc).
         if spec.next_selector or spec.next_texts:
             states = [{spec.username_selector}, {spec.password_selector}, {verify}]
         else:
             states = [{spec.username_selector, spec.password_selector}, {verify}]
-        return cls(states, spec.home_url, (spec.submit_selector,))
+        return cls(states, spec.home_url, (spec.next_selector, spec.submit_selector))
 
     @property
     def current_url(self) -> str:
@@ -149,14 +158,19 @@ class _FakeLoginPage:
     def fill(self, selector: str, text: str) -> bool:  # noqa: ARG002 — không lưu text (INV-12)
         return selector in self._states[self._i]
 
-    def click(self, selector: str) -> bool:
-        if selector in self._advance_on and self._i < len(self._states) - 1:
+    def _advance_state(self) -> None:
+        # Sang state kế + ĐỔI URL (mô phỏng X SPA đổi hash khi chuyển bước → wait_url_change bắt được).
+        if self._i < len(self._states) - 1:
             self._i += 1
+            self._url = f"{self._url}#{self._i}"
+
+    def click(self, selector: str) -> bool:
+        if selector in self._advance_on:
+            self._advance_state()
         return True
 
     def press_enter(self, selector: str) -> bool:  # noqa: ARG002 — Enter = submit bước → sang state kế
-        if self._i < len(self._states) - 1:
-            self._i += 1
+        self._advance_state()
         return True
 
     def click_text(self, text: str) -> bool:  # noqa: ARG002 — nút "Continue with Google"/"Use password" coi như bấm được
@@ -170,6 +184,9 @@ class _FakeLoginPage:
 
     def wait_present(self, selector: str, timeout: float) -> bool:  # noqa: ARG002
         return True
+
+    def wait_url_change(self, old_url: str, timeout: float) -> bool:  # noqa: ARG002
+        return self._url != old_url
 
     def cookies_string(self) -> str:
         return '[{"name":"sessionid","value":"fresh-fake"}]'

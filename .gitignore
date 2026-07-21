@@ -26,4 +26,11 @@ Thumbs.db
 # E2E harness logs
 .e2e-logs/
 
+# Python (apps/worker) — bytecode + tooling caches + venv sinh tự động, KHÔNG commit.
+# `_contracts_gen.py` & `packages/contracts/schema/*.json` là mã SINH có chủ đích → vẫn commit (đừng ignore).
 *.pyc
+__pycache__/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

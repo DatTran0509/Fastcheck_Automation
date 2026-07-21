@@ -602,6 +602,12 @@
             "string",
             "null"
           ]
+        },
+        "confirm_username": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

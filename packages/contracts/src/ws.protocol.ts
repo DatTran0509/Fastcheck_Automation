@@ -195,6 +195,9 @@ export const loginRunCommandSchema = z.object({
   username: z.string().nullish(),
   password: z.string().nullish(),
   otp_secret: z.string().nullish(),
+  // X chèn bước "Confirm your account" (hỏi @username) khi nghi bot, TRƯỚC bước mật khẩu/OTP. Đây là @handle
+  // của X (khác `username` — thứ dùng để đăng nhập, thường là email). Chỉ dùng cho X info-login.
+  confirm_username: z.string().nullish(),
 });
 
 export const commandPayloadSchema = z.discriminatedUnion('name', [

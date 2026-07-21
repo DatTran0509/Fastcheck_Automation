@@ -1,14 +1,13 @@
 """`DrissionLoginPage` — hiện thực `LoginPage` trên browser THẬT (DrissionPage attach CDP GemLogin).
 
-Chỉ dùng ở real mode. Gõ MÔ PHỎNG NGƯỜI: từng ký tự + delay ngẫu nhiên nhỏ (chống phát hiện bot ở mức cơ
-bản — spec §4.4). KHÔNG log giá trị cookie/credential (INV-12). Selector query phòng thủ như DrissionPageView.
+Chỉ dùng ở real mode. Điền bằng cách PASTE cả chuỗi một lần (nhanh, không gõ từng ký tự) rồi để `_advance`
+nhấn Enter đi tiếp. KHÔNG log giá trị cookie/credential (INV-12). Selector query phòng thủ như DrissionPageView.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import random
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,9 +18,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("fastcheck.worker.login")
 
-# Delay gõ mỗi ký tự (giây) — khoảng người thật, đủ để không "dán" tức thì.
-_TYPE_DELAY_MIN = 0.04
-_TYPE_DELAY_MAX = 0.18
+# Chờ sau khi paste để trang (X là React) kịp cập nhật state (bật nút Next / nhận value) trước khi Enter —
+# tránh Enter khi value chưa "ăn" (X bỏ qua submit nếu field chưa hợp lệ).
+_SETTLE_AFTER_FILL = 0.7
 # Chờ tìm phần tử form (giây) khi gõ/click — ngắn để không kéo dài job.
 _STEP_LOOKUP_TIMEOUT = 8.0
 # Trần thời gian điều hướng (giây). X là SPA có kết nối bền → 'load' rất lâu; retry=0 + timeout để KHÔNG
@@ -75,18 +74,29 @@ class DrissionLoginPage:
             el.clear()
         except Exception:  # noqa: BLE001, S110 — clear best-effort (ô có thể chưa hỗ trợ)
             pass
-        # Gõ từng ký tự + delay ngẫu nhiên (mô phỏng người — KHÔNG log text, INV-12).
-        for ch in text:
-            el.input(ch)
-            time.sleep(random.uniform(_TYPE_DELAY_MIN, _TYPE_DELAY_MAX))  # noqa: S311 — không phải mật mã
+        # PASTE cả chuỗi một lần (nhanh — KHÔNG gõ từng ký tự). el.input(text) dispatch input event qua CDP nên
+        # React của X vẫn nhận (bật nút Next). KHÔNG log text (INV-12).
+        el.input(text)
+        # Chờ ngắn để trang kịp cập nhật state trước khi _advance nhấn Enter (X bật nút / nhận value async).
+        time.sleep(_SETTLE_AFTER_FILL)
         return True
 
     def click(self, selector: str) -> bool:
         el = self._safe_ele(selector, timeout=_STEP_LOOKUP_TIMEOUT)
         if el is None:
             return False
-        el.click()
-        return True
+        # Real mouse click trước (React nhận sự kiện); lỗi → JS .click() (nút X là React, đôi khi bỏ qua click
+        # CDP thường). Giống click_text để nút "Next"/submit ăn chắc khi Enter không submit được.
+        try:
+            el.click()
+            return True
+        except Exception:  # noqa: BLE001
+            try:
+                el.click(by_js=True)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("click %r lỗi (%s)", selector, type(exc).__name__)
+                return False
 
     def press_enter(self, selector: str) -> bool:
         el = self._safe_ele(selector, timeout=_STEP_LOOKUP_TIMEOUT)
@@ -102,19 +112,27 @@ class DrissionLoginPage:
             return False
 
     def click_text(self, text: str) -> bool:
-        # Nhắm phần tử CLICK ĐƯỢC (button/a/[role=button/link]) chứa text, KHÔNG phải <span> text node lồng trong:
+        # Nhắm phần tử CLICK ĐƯỢC (button/a/[role=button/link]) theo text, KHÔNG phải <span> text node lồng trong:
         # click span con thường KHÔNG kích hoạt onClick React ở nút cha khi tự động hoá (vd 'Use password' của X
-        # ăn ở browser thường nhưng không ăn qua CDP). XPath contains(.) tìm đúng nút. KHÔNG log text (INV-12).
+        # ăn ở browser thường nhưng không ăn qua CDP). KHÔNG log text (INV-12).
+        # Ưu tiên khớp CHÍNH XÁC (normalize-space = text) để "Continue" KHÔNG trúng "Continue with Google/phone/
+        # Apple" (X có mấy nút social cùng chứa "Continue"); không có mới lùi về contains.
         if not text:
             return False
         safe = text.replace('"', "")
-        xpath = (
+        exact_xpath = (
+            f'xpath://button[normalize-space(.)="{safe}"] | //*[@role="button"][normalize-space(.)="{safe}"] '
+            f'| //a[normalize-space(.)="{safe}"]'
+        )
+        contains_xpath = (
             f'xpath://button[contains(., "{safe}")] | //a[contains(., "{safe}")] '
             f'| //*[@role="button"][contains(., "{safe}")] | //*[@role="link"][contains(., "{safe}")]'
         )
         el = None
         try:
-            el = self._page.ele(xpath, timeout=_STEP_LOOKUP_TIMEOUT)
+            el = self._page.ele(exact_xpath, timeout=_STEP_LOOKUP_TIMEOUT)
+            if not el:
+                el = self._page.ele(contains_xpath, timeout=1)
             if not el:  # fallback: bất kỳ phần tử nào chứa text (rồi click sẽ tự bubble lên nút cha)
                 el = self._page.ele(f"text:{text}", timeout=1)
         except Exception as exc:  # noqa: BLE001 — tìm theo text best-effort
@@ -142,6 +160,19 @@ class DrissionLoginPage:
         except Exception as exc:  # noqa: BLE001
             logger.debug("wait_present %r lỗi (%s)", selector, type(exc).__name__)
             return False
+
+    def wait_url_change(self, old_url: str, timeout: float) -> bool:
+        # X là SPA hash-routing (#/s/knowledge_check → bước kế) → URL đổi khi chuyển bước. Đây là tín hiệu ĐÁNG
+        # TIN để biết "đã sang bước mới" (X giữ input cũ trong DOM nên 'ô còn/mất' KHÔNG đáng tin). Poll ngắn.
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if str(self._page.url) != old_url:
+                    return True
+            except Exception as exc:  # noqa: BLE001 — đọc url best-effort
+                logger.debug("wait_url_change đọc url lỗi (%s)", type(exc).__name__)
+            time.sleep(0.25)
+        return False
 
     def use_latest_tab(self) -> bool:
         # OAuth Google mở tab/popup mới → chuyển thao tác sang tab mới nhất. latest_tab trả tab mới nhất

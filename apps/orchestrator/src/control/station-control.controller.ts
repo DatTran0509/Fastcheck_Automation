@@ -151,9 +151,13 @@ export class StationControlController {
         method: { type: 'string', enum: ['COOKIE', 'INFO'] },
         profile_id: { type: 'string', description: 'uuid — để dùng cookie đã lưu (method COOKIE)' },
         cookie: { type: 'string' },
-        username: { type: 'string' },
+        username: { type: 'string', description: 'Định danh đăng nhập (X/TikTok: email tài khoản)' },
         password: { type: 'string' },
         otp_secret: { type: 'string', description: 'TOTP base32 để tự sinh mã 2FA (info-login)' },
+        confirm_username: {
+          type: 'string',
+          description: '@username của X cho bước "Confirm your account" (chống bot) — chỉ X info-login',
+        },
       },
     },
   })

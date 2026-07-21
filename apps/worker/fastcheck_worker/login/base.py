@@ -7,9 +7,26 @@ bọc ChromiumPage. Không log cookie/credential (INV-12).
 
 from __future__ import annotations
 
+import base64
 import enum
+import hmac
+import struct
+import time
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+
+
+def generate_totp(secret_b32: str) -> str:
+    """Sinh mã TOTP 6 số (RFC 6238, bước 30s, SHA1) từ secret base32 (2FA) — DÙNG CHUNG cho mọi nơi cần
+    tự sinh mã (InfoLogin trên site gốc, GoogleLogin khi tài khoản Google bật 2FA). Một nguồn sự thật."""
+    padded = secret_b32.strip().upper().replace(" ", "")
+    padded += "=" * ((8 - len(padded) % 8) % 8)
+    key = base64.b32decode(padded)
+    counter = int(time.time()) // 30
+    digest = hmac.new(key, struct.pack(">Q", counter), "sha1").digest()
+    offset = digest[-1] & 0x0F
+    code = (struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}"
 
 
 class LoginError(RuntimeError):
@@ -44,6 +61,9 @@ class Credential:
     password: str | None = None
     # TOTP secret (base32) để tự sinh mã 2FA khi info-login gặp OTP. Không có → OTP_REQUIRED.
     otp_secret: str | None = None
+    # @username của X cho bước "Confirm your account" (X hỏi @handle để chống bot TRƯỚC bước mật khẩu). Khác
+    # `username` (định danh đăng nhập — thường là email). Không có → fallback bấm "Use password" bỏ qua bước này.
+    confirm_username: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +124,11 @@ class LoginPage(Protocol):
 
     def wait_present(self, selector: str, timeout: float) -> bool:
         """Chờ selector xuất hiện tối đa `timeout` giây. Hết giờ → False (KHÔNG coi là lỗi cứng)."""
+        ...
+
+    def wait_url_change(self, old_url: str, timeout: float) -> bool:
+        """Chờ URL đổi khỏi `old_url` tối đa `timeout` giây (X là SPA hash-routing '#/s/...' — URL đổi khi
+        chuyển bước login). Dùng để XÁC MINH đã sang bước mới vì X giữ input cũ trong DOM. Hết giờ → False."""
         ...
 
     def cookies_string(self) -> str:

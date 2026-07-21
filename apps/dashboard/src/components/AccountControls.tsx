@@ -24,9 +24,9 @@ function detectPlatformFromCookie(raw: string): string | null {
   return null;
 }
 
-// login-by-info: TikTok (user/pass gốc), X & YouTube (qua tài khoản GOOGLE). Facebook chỉ cookie.
+// login-by-info: X (user/pass gốc trên x.com), TikTok & YouTube (qua tài khoản GOOGLE). Facebook chỉ cookie.
 const INFO_PLATFORMS = new Set(['TIKTOK', 'TWITTER', 'YOUTUBE']);
-const GOOGLE_INFO_PLATFORMS = new Set(['TWITTER', 'YOUTUBE']); // INFO = đăng nhập bằng tài khoản Google
+const GOOGLE_INFO_PLATFORMS = new Set(['TIKTOK', 'YOUTUBE']); // INFO = đăng nhập bằng tài khoản Google
 
 // Nhãn thao tác + nhãn field cho BẢNG kết quả (thay vì JSON thô — dễ đọc cho operator).
 const ACTION_LABEL: Record<string, string> = {
@@ -108,6 +108,8 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState('');
+  // @username của X cho bước "Confirm your account" (khác `username` = email/định danh đăng nhập). Chỉ X.
+  const [confirmUsername, setConfirmUsername] = useState('');
   const [label, setLabel] = useState('');
   const [proxy, setProxy] = useState('');
   const [verify, setVerify] = useState(true);
@@ -147,7 +149,8 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
   const cookiePlatform = detectPlatformFromCookie(cookie);
   const cookieMismatch = cookiePlatform != null && cookiePlatform !== platform;
   const infoSupported = INFO_PLATFORMS.has(platform);
-  const infoViaGoogle = GOOGLE_INFO_PLATFORMS.has(platform); // X/YouTube: INFO = tài khoản Google
+  const infoViaGoogle = GOOGLE_INFO_PLATFORMS.has(platform); // TikTok/YouTube: INFO = tài khoản Google
+  const infoDirectX = platform === 'TWITTER'; // X: INFO = user/pass gốc trên x.com (+ @username confirm)
 
   return (
     <section className="card">
@@ -186,7 +189,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           <label>Phương thức login</label>
           <select value={method} onChange={(e) => setMethod(e.target.value as 'COOKIE' | 'INFO')}>
             <option value="COOKIE">COOKIE (cả 4 nền tảng)</option>
-            <option value="INFO">INFO — TikTok: user/pass · X &amp; YouTube: tài khoản Google</option>
+            <option value="INFO">INFO — X: user/pass · TikTok &amp; YouTube: tài khoản Google</option>
           </select>
         </div>
       </div>
@@ -212,7 +215,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
       {/* Đăng nhập bằng TÀI KHOẢN (INFO) — LUÔN hiện để dễ thấy; chỉ bật khi chọn Phương thức login = INFO. */}
       <div className="field">
         <label>
-          Đăng nhập bằng tài khoản — TikTok: user/pass · X &amp; YouTube: <b>tài khoản Google</b>
+          Đăng nhập bằng tài khoản — X: user/pass gốc · TikTok &amp; YouTube: <b>tài khoản Google</b>
         </label>
         {!infoMode && (
           <div className="card-hint" style={{ marginBottom: 8 }}>
@@ -222,7 +225,16 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
         {infoMode && infoViaGoogle && (
           <div className="alert warn" style={{ marginBottom: 8 }}>
             ℹ️ <b>{platform}</b> đăng nhập qua <b>Google</b>: nhập <b>email + mật khẩu TÀI KHOẢN GOOGLE</b> (không phải
-            mật khẩu {platform}). Lưu ý Google chặn browser tự động khá mạnh — cookie vẫn là cách ổn định nhất.
+            mật khẩu {platform}). OTP secret chỉ cần nếu <b>tài khoản Google</b> bật 2FA. Lưu ý Google chặn browser
+            tự động khá mạnh — cookie vẫn là cách ổn định nhất.
+          </div>
+        )}
+        {infoMode && infoDirectX && (
+          <div className="alert warn" style={{ marginBottom: 8 }}>
+            ℹ️ <b>X</b> đăng nhập trực tiếp trên x.com (luồng <b>passwordless</b>): <b>Tài khoản</b> ={' '}
+            email/SĐT/username đăng nhập → nếu X hỏi <b>"Confirm your account"</b> thì nhập <b>@username của X</b>{' '}
+            (ô riêng bên dưới) → xác thực bằng <b>OTP secret</b> (bắt buộc, tự gen mã 2FA). <b>Password</b> chỉ cần
+            như phương án dự phòng nếu X vẫn bắt nhập mật khẩu.
           </div>
         )}
         {infoMode && !infoSupported && (
@@ -232,7 +244,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
         )}
         <div className="form-grid">
           <div>
-            <label>Username</label>
+            <label>{infoDirectX ? 'Tài khoản (email/SĐT/username đăng nhập)' : 'Username (email tài khoản Google)'}</label>
             <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" disabled={!infoMode} />
           </div>
           <div>
@@ -267,6 +279,19 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
               disabled={!infoMode}
             />
           </div>
+          {/* @username của X cho bước "Confirm your account" — CHỈ X (khác ô Tài khoản = email/định danh đăng nhập). */}
+          {infoDirectX && (
+            <div>
+              <label>Username của X </label>
+              <input
+                value={confirmUsername}
+                onChange={(e) => setConfirmUsername(e.target.value)}
+                placeholder="tuỳ chọn — vd my_x_handle (không cần @)"
+                autoComplete="off"
+                disabled={!infoMode}
+              />
+            </div>
+          )}
         </div>
       </div>
 
@@ -335,6 +360,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
                 username: username || undefined,
                 password: password || undefined,
                 otp_secret: otp || undefined,
+                confirm_username: confirmUsername || undefined,
               }),
             )
           }

@@ -133,6 +133,7 @@ export class StationControlService {
       username: req.username,
       password: req.password,
       otp_secret: req.otp_secret,
+      confirm_username: req.confirm_username,
     });
   }
 

@@ -46,7 +46,7 @@ def test_cookie_login_empty_cookie_is_dead_not_logged_in() -> None:
 
 @pytest.mark.parametrize("platform", [Platform.TIKTOK, Platform.TWITTER, Platform.YOUTUBE])
 def test_info_login_ok_for_tiktok_x_youtube(platform: Platform) -> None:
-    # TikTok: user/pass gốc; X & YouTube: qua Google (tài khoản Google). Tất cả → LOGGED_IN ở fake mode.
+    # X: user/pass gốc; TikTok & YouTube: qua Google (tài khoản Google). Tất cả → LOGGED_IN ở fake mode.
     r = _run(platform=platform, method="INFO", username="user", password="pass")
     assert r.outcome == LoginOutcome.LOGGED_IN
 

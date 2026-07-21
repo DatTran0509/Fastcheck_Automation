@@ -88,6 +88,8 @@ export const runLoginRequestSchema = z.object({
   username: z.string().optional(),
   password: z.string().optional(),
   otp_secret: z.string().optional(),
+  // @handle của X cho bước "Confirm your account" (chống bot) — khác `username` (email đăng nhập). Chỉ X.
+  confirm_username: z.string().optional(),
 });
 export type RunLoginRequest = z.infer<typeof runLoginRequestSchema>;
 

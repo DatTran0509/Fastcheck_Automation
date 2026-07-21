@@ -2,7 +2,8 @@
 
 Tái sử dụng `SignalSpec` của detector: `login_selectors` (guard đã đăng nhập), `block_selectors`
 (captcha/challenge), `login_url_markers` (trang login) — KHÔNG khai báo lại (một nguồn sự thật).
-Form selector (ô user/pass/submit/OTP) chỉ dùng cho login-by-info (TikTok & X).
+Form selector (ô user/pass/submit/OTP) chỉ dùng cho login-by-info trực tiếp trên site gốc (X) — TikTok &
+YouTube đăng nhập qua tài khoản Google (GoogleLogin) nên không cần khai báo form gốc riêng.
 """
 
 from __future__ import annotations
@@ -34,17 +35,18 @@ class LoginFormSpec:
     next_selector: str = ""
     # Text nút "Continue"/"Tiếp tục" (X không có testid ổn định) — click theo text nếu selector không khớp.
     next_texts: tuple[str, ...] = ()
-    # Link "Use password" (X hiện bước "Confirm your account" khi nghi bot) — bấm để sang ô mật khẩu.
-    use_password_text: str = ""
+    # Ô nhập @username ở bước "Confirm your account" (X hỏi @handle để chống bot sau bước nhập tài khoản). Điền
+    # confirm_username của credential vào đây; rỗng = platform không có bước này.
+    confirm_username_selector: str = ""
     # Text nút submit ("Log in"/"Đăng nhập"/"Continue"/"Tiếp tục").
     submit_texts: tuple[str, ...] = ()
     otp_selectors: tuple[str, ...] = ()
     error_selectors: tuple[str, ...] = ()
     supports_info: bool = False
-    # ── Đăng nhập qua GOOGLE (X & YouTube — GoogleLogin) ──
-    # URL bắt đầu cho Google-login (YT: trang Google sign-in; X: trang login có nút "Continue with Google").
+    # ── Đăng nhập qua GOOGLE (TikTok & YouTube — GoogleLogin) ──
+    # URL bắt đầu cho Google-login (YT: trang Google sign-in; TikTok: trang login có nút "Continue with Google").
     google_login_url: str = ""
-    # Text nút "Continue with Google" trên trang platform (X). Rỗng = vào thẳng Google (YouTube).
+    # Text nút "Continue with Google" trên trang platform (TikTok). Rỗng = vào thẳng Google (YouTube).
     google_button_texts: tuple[str, ...] = ()
 
 
@@ -54,13 +56,11 @@ TIKTOK_LOGIN = LoginFormSpec(
     block_selectors=TIKTOK_SPEC.block_selectors,
     login_url_markers=TIKTOK_SPEC.login_url_markers,
     auth_cookies=TIKTOK_SPEC.auth_cookies,
-    login_url="https://www.tiktok.com/login/phone-or-email/email",
-    username_selector='input[name="username"]',
-    password_selector='input[type="password"]',
-    submit_selector='button[data-e2e="login-button"]',
-    otp_selectors=('input[name="code"]', '[data-e2e="verify-code"]'),
-    error_selectors=('[data-e2e="login-error"]', ".error-text"),
-    supports_info=True,
+    # Đăng nhập qua GOOGLE (TikTok — GoogleLogin): mở trang chọn phương thức đăng nhập TikTok (có nút social)
+    # → "Continue with Google" → Google OAuth (email/mật khẩu tài khoản Google, 2FA tùy chọn nếu có). TikTok
+    # KHÔNG dùng form gốc (user/pass trực tiếp trên tiktok.com) nên không khai báo field form ở đây.
+    google_login_url="https://www.tiktok.com/login",
+    google_button_texts=("Continue with Google", "Tiếp tục với Google"),
 )
 
 TWITTER_LOGIN = LoginFormSpec(
@@ -69,24 +69,37 @@ TWITTER_LOGIN = LoginFormSpec(
     block_selectors=TWITTER_SPEC.block_selectors,
     login_url_markers=TWITTER_SPEC.login_url_markers,
     auth_cookies=TWITTER_SPEC.auth_cookies,
-    # URL onboarding trực tiếp (người dùng chỉ): nhập tk → Continue → Use password → nhập mk → Continue.
-    login_url="https://x.com/i/jf/onboarding/web?mode=login",
+    # Passwordless (người dùng chỉ): nhập email → Next → "Confirm your account" (@username) → Next → mã OTP.
+    login_url="https://x.com",
     # CSS list (dấu phẩy = fallback, INV-8) vì X phục vụ NHIỀU biến thể trang login. `~=` khớp
     # autocomplete="username webauthn" (khớp CHÍNH XÁC "username" KHÔNG match — bug cũ khiến ô user không được gõ).
     username_selector='input[autocomplete~="username"], input[name="text"], input[name="username_or_email"]',
     password_selector='input[name="password"], input[type="password"]',
     submit_selector='[data-testid="LoginForm_Login_Button"]',
     next_selector='[data-testid="ocfEnterTextNextButton"], [data-testid="OCF_CallToAction_Button"]',
-    next_texts=("Continue", "Tiếp tục"),
-    # X chèn "Confirm your account" (username/phone) khi nghi bot — link "Use password" bỏ qua sang mật khẩu.
-    use_password_text="Use password",
-    submit_texts=("Log in", "Đăng nhập", "Continue", "Tiếp tục"),
-    otp_selectors=('[data-testid="ocfEnterTextTextInput"]', 'input[name="text"][inputmode="numeric"]'),
+    # Text nút submit bước nhập tk & "Confirm your account". "Next" ĐỨNG TRƯỚC "Continue": trên trang landing
+    # X, nút chính là "Next" — khớp trước để KHÔNG đụng nút social "Continue with Google/phone/Apple"; ở màn
+    # "Confirm your account" nút là "Continue" (không có nút social nào ở đó nên an toàn). Chủ yếu dựa selector.
+    next_texts=("Next", "Continue", "Tiếp theo", "Tiếp tục"),
+    # Ô @username ở bước "Confirm your account" (knowledge_check) thực tế là `input[name="challenge_response"]`
+    # (xác nhận qua DIAG form thật). Đặt TRƯỚC làm selector chính; thêm biến thể OCF/name=text làm fallback cho
+    # các phiên bản trang khác. Loại `inputmode="numeric"` để KHÔNG khớp ô OTP. KHÔNG dùng `name="username_or_email"`
+    # (ô email cũ X giữ lại trong DOM) để tránh điền nhầm @username vào ô email.
+    confirm_username_selector=(
+        'input[name="challenge_response"], '
+        '[data-testid="ocfEnterTextTextInput"]:not([inputmode="numeric"]), '
+        'input[name="text"]:not([inputmode="numeric"])'
+    ),
+    # Text nút submit cho bước mật khẩu (fallback) VÀ bước OTP: "Log in" (màn mật khẩu) + "Next"/"Continue"
+    # (màn OTP knowledge_check của X). Click theo text CHÍNH XÁC nên liệt kê nhiều nhãn là an toàn (chỉ nhãn
+    # khớp đúng mới được click), né nút social "Continue with ...".
+    submit_texts=("Log in", "Đăng nhập", "Next", "Continue", "Tiếp theo", "Tiếp tục"),
+    # CHỈ selector CÓ inputmode="numeric": testid OCF gốc (`ocfEnterTextTextInput`) dùng CHUNG cho cả bước
+    # "confirm your identity" (challenge — đã có trong block_selectors của detector) lẫn bước nhập mã 2FA,
+    # không tự phân biệt được. inputmode="numeric" là tín hiệu ĐÚNG riêng cho "đây là OTP" (INV-7/INV-1).
+    otp_selectors=('input[name="text"][inputmode="numeric"]',),
     error_selectors=('[data-testid="LoginForm_Login_Button"][aria-disabled="true"]',),
     supports_info=True,
-    # Đăng nhập qua Google: mở trang login X (có nút social) → "Continue with Google" → Google OAuth.
-    google_login_url="https://x.com/i/flow/login",
-    google_button_texts=("Continue with Google", "Tiếp tục với Google", "Sign in with Google"),
 )
 
 # FB & YT: chỉ login-by-cookie (đúng phạm vi Excel) — không có phần form info.
