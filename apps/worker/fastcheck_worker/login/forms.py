@@ -100,6 +100,11 @@ TWITTER_LOGIN = LoginFormSpec(
     otp_selectors=('input[name="text"][inputmode="numeric"]',),
     error_selectors=('[data-testid="LoginForm_Login_Button"][aria-disabled="true"]',),
     supports_info=True,
+    # Đăng nhập qua GOOGLE (tài khoản đăng nhập X là tài khoản Google — "Continue with Google" trên landing
+    # x.com). Form Google ổn định hơn flow X gốc (đỡ arkose/knowledge-check). Các field form gốc ở trên giữ
+    # cho InfoLogin (login X gốc, hiện KHÔNG nối tuyến — xem login/__init__.py). google_login_url = landing x.com.
+    google_login_url="https://x.com/",
+    google_button_texts=("Continue with Google", "Tiếp tục với Google"),
 )
 
 # FB & YT: chỉ login-by-cookie (đúng phạm vi Excel) — không có phần form info.

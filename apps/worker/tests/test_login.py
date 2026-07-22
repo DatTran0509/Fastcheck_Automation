@@ -11,12 +11,19 @@ import pytest
 from fastcheck_worker.contracts import Platform
 from fastcheck_worker.login import (
     Credential,
+    InfoLogin,
     LoginError,
     LoginMethod,
     get_login_strategy,
 )
-from fastcheck_worker.login.base import LoginOutcome
+from fastcheck_worker.login.base import LoginOutcome, LoginStrategy
 from fastcheck_worker.login.forms import TIKTOK_LOGIN, TWITTER_LOGIN, YOUTUBE_LOGIN
+
+
+def _x_native_info() -> LoginStrategy:
+    # X GỐC (user/pass trên x.com) qua InfoLogin — KHÔNG còn nối tuyến trong get_login_strategy (X+INFO giờ
+    # đi qua Google). Dựng thẳng để vẫn kiểm được logic InfoLogin (code vẫn giữ, có thể nối lại sau).
+    return InfoLogin(TWITTER_LOGIN)
 
 
 class FakeLoginPage:
@@ -61,7 +68,11 @@ class FakeLoginPage:
         self._advance_state()
         return True
 
-    def click_text(self, text: str) -> bool:  # noqa: ARG002 — nút "Continue with Google"/"Use password" coi như bấm được
+    def click_text(self, text: str) -> bool:
+        # Mô phỏng: bấm "Continue with Google" = redirect OAuth sang Google (để wait_url_contains bắt được);
+        # các nút khác coi như bấm được.
+        if "Continue with Google" in text:
+            self._url = "https://accounts.google.com/v3/signin/identifier"
         return True
 
     def use_latest_tab(self) -> bool:
@@ -75,6 +86,9 @@ class FakeLoginPage:
 
     def wait_url_change(self, old_url: str, timeout: float) -> bool:
         return self._url != old_url
+
+    def wait_url_contains(self, substring: str, timeout: float) -> bool:  # noqa: ARG002
+        return substring in self._url
 
     def cookies_string(self) -> str:
         return '[{"name":"sessionid","value":"fresh"}]'
@@ -124,7 +138,7 @@ def test_info_login_x_passwordless_otp_logs_in() -> None:
         states=[set(), {TWITTER_LOGIN.otp_selectors[0]}, {TWITTER_LOGIN.verify_selectors[0]}],
         advance_on=(TWITTER_LOGIN.next_selector, TWITTER_LOGIN.submit_selector),
     )
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+    result = _x_native_info().login(
         page,
         Credential(method=LoginMethod.INFO, username="me@mail.com", otp_secret="JBSWY3DPEHPK3PXP"),
     )
@@ -138,7 +152,7 @@ def test_info_login_x_requires_otp_secret_or_password() -> None:
     # Thiếu CẢ otp_secret LẪN password → không thể đăng nhập tự động → LoginError (báo ra, không đoán — INV-1).
     page = FakeLoginPage(states=[set()])
     with pytest.raises(LoginError):
-        get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+        _x_native_info().login(
             page, Credential(method=LoginMethod.INFO, username="me@mail.com")
         )
 
@@ -155,7 +169,7 @@ def test_info_login_x_confirm_account_fills_username() -> None:
         ],
         advance_on=(TWITTER_LOGIN.next_selector, TWITTER_LOGIN.submit_selector),
     )
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+    result = _x_native_info().login(
         page,
         Credential(
             method=LoginMethod.INFO,
@@ -177,7 +191,7 @@ def test_info_login_x_password_fallback_logs_in() -> None:
         states=[set(), {TWITTER_LOGIN.password_selector}, {TWITTER_LOGIN.verify_selectors[0]}],
         advance_on=(TWITTER_LOGIN.next_selector, TWITTER_LOGIN.submit_selector),
     )
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+    result = _x_native_info().login(
         page, Credential(method=LoginMethod.INFO, username="me@mail.com", password="p")
     )
     assert result.outcome == LoginOutcome.LOGGED_IN
@@ -189,7 +203,7 @@ def test_info_login_captcha_is_blocked() -> None:
         states=[set(), {TWITTER_LOGIN.block_selectors[0]}],
         advance_on=(TWITTER_LOGIN.next_selector, TWITTER_LOGIN.submit_selector),
     )
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+    result = _x_native_info().login(
         page, Credential(method=LoginMethod.INFO, username="u", otp_secret="JBSWY3DPEHPK3PXP")
     )
     assert result.outcome == LoginOutcome.BLOCKED
@@ -201,7 +215,7 @@ def test_info_login_otp_without_secret_requires_otp() -> None:
         states=[set(), {TWITTER_LOGIN.otp_selectors[0]}],
         advance_on=(TWITTER_LOGIN.next_selector, TWITTER_LOGIN.submit_selector),
     )
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+    result = _x_native_info().login(
         page, Credential(method=LoginMethod.INFO, username="u", password="p")
     )
     assert result.outcome == LoginOutcome.OTP_REQUIRED
@@ -214,7 +228,7 @@ def test_info_login_x_form_error_when_field_missing() -> None:
             return False
 
     page = _NoFieldPage(states=[set()], url="https://x.com/i/jf/onboarding/web?mode=login")
-    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+    result = _x_native_info().login(
         page, Credential(method=LoginMethod.INFO, username="u", password="p")
     )
     assert result.outcome == LoginOutcome.FORM_ERROR
@@ -222,12 +236,29 @@ def test_info_login_x_form_error_when_field_missing() -> None:
 
 
 # ── login-by-info: TikTok & YouTube qua tài khoản Google (GoogleLogin) ──────
-@pytest.mark.parametrize("platform", [Platform.TIKTOK, Platform.YOUTUBE])
+# Nút Next của Google: click(Next) trong _advance → chuyển bước + đổi URL để wait_url_change xác minh đã sang bước.
+def _google_next() -> tuple[str, ...]:
+    from fastcheck_worker.login.google_login import (
+        _GOOGLE_EMAIL_NEXT,
+        _GOOGLE_OTP_NEXT,
+        _GOOGLE_PASSWORD_NEXT,
+    )
+
+    return (_GOOGLE_EMAIL_NEXT, _GOOGLE_PASSWORD_NEXT, _GOOGLE_OTP_NEXT)
+
+
+@pytest.mark.parametrize("platform", [Platform.TIKTOK, Platform.TWITTER, Platform.YOUTUBE])
 def test_info_login_via_google_logs_in(platform: Platform) -> None:
-    # TikTok & YouTube: method INFO → đăng nhập QUA GOOGLE (email → enter → password → enter → verify guard).
-    spec = {Platform.TIKTOK: TIKTOK_LOGIN, Platform.YOUTUBE: YOUTUBE_LOGIN}[platform]
+    # X, TikTok, YouTube: method INFO → QUA GOOGLE (email → Next → sang bước pwd → password → Next → verify guard).
+    spec = {
+        Platform.TIKTOK: TIKTOK_LOGIN,
+        Platform.TWITTER: TWITTER_LOGIN,
+        Platform.YOUTUBE: YOUTUBE_LOGIN,
+    }[platform]
     page = FakeLoginPage(
-        states=[set(), set(), {spec.verify_selectors[0]}], url="https://accounts.google.com/"
+        states=[set(), set(), {spec.verify_selectors[0]}],
+        url="https://accounts.google.com/",
+        advance_on=_google_next(),
     )
     result = get_login_strategy(platform, LoginMethod.INFO).login(
         page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
@@ -235,13 +266,51 @@ def test_info_login_via_google_logs_in(platform: Platform) -> None:
     assert result.outcome == LoginOutcome.LOGGED_IN
 
 
+def test_google_login_2fa_chooser_selects_authenticator_then_logs_in() -> None:
+    # 2FA có màn CHỌN phương thức (tài khoản X qua Google bật nhiều cách): sau mật khẩu CHƯA hiện ô mã → phải
+    # chọn "Google Authenticator app" → mới hiện ô mã → tự sinh TOTP từ otp_secret → LOGGED_IN.
+    from fastcheck_worker.login.google_login import _GOOGLE_OTP
+
+    class _ChooserPage(FakeLoginPage):
+        def click_text(self, text: str) -> bool:
+            if "Google Authenticator" in text:
+                self._advance_state()  # chọn phương thức Authenticator → hiện ô nhập mã TOTP
+                return True
+            return super().click_text(text)  # base: "Continue with Google" → mô phỏng redirect sang Google
+
+    # states: email → password → CHỌN phương thức (chưa có ô mã) → ô mã TOTP → verify guard X.
+    page = _ChooserPage(
+        states=[set(), set(), set(), {_GOOGLE_OTP}, {TWITTER_LOGIN.verify_selectors[0]}],
+        url="https://x.com/",
+        advance_on=_google_next(),
+    )
+    result = get_login_strategy(Platform.TWITTER, LoginMethod.INFO).login(
+        page,
+        Credential(
+            method=LoginMethod.INFO, username="me@gmail.com", password="p", otp_secret="JBSWY3DPEHPK3PXP"
+        ),
+    )
+    assert result.outcome == LoginOutcome.LOGGED_IN
+
+
+def test_info_login_google_email_step_stuck_is_blocked() -> None:
+    # Bấm Next ở bước email nhưng KHÔNG chuyển bước (URL không đổi) = Google chặn/từ chối email → BLOCKED,
+    # TUYỆT ĐỐI không gõ mật khẩu vào ô email (bug email+password dính liền). advance_on rỗng → click không đổi URL.
+    page = FakeLoginPage(states=[set()], url="https://accounts.google.com/", advance_on=())
+    result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
+    )
+    assert result.outcome == LoginOutcome.BLOCKED
+    assert result.detail == "google_email_step_stuck"
+
+
 def test_info_login_google_blocked_when_no_password_field() -> None:
-    # Google chặn browser tự động → sau email KHÔNG hiện ô mật khẩu → BLOCKED (báo rõ, không đoán — INV-1).
+    # Đã sang bước pwd (URL đổi) nhưng ô mật khẩu KHÔNG hiện → Google bắt xác minh → BLOCKED (không đoán — INV-1).
     class _NoPasswordPage(FakeLoginPage):
         def wait_present(self, selector: str, timeout: float) -> bool:  # noqa: ARG002
-            return False  # ô mật khẩu Google không bao giờ hiện
+            return False  # ô mật khẩu không bao giờ hiện (wait_url_change vẫn dùng bản gốc → email vẫn sang bước)
 
-    page = _NoPasswordPage(states=[set()], url="https://accounts.google.com/")
+    page = _NoPasswordPage(states=[set(), set()], url="https://accounts.google.com/", advance_on=_google_next())
     result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
         page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
     )
@@ -253,7 +322,9 @@ def test_google_login_otp_without_secret_requires_otp() -> None:
     # Tài khoản Google bật 2FA nhưng không có otp_secret → OTP_REQUIRED (cần người, không đoán — INV-1).
     from fastcheck_worker.login.google_login import _GOOGLE_OTP
 
-    page = FakeLoginPage(states=[set(), set(), {_GOOGLE_OTP}], url="https://accounts.google.com/")
+    page = FakeLoginPage(
+        states=[set(), set(), {_GOOGLE_OTP}], url="https://accounts.google.com/", advance_on=_google_next()
+    )
     result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
         page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
     )
@@ -268,6 +339,7 @@ def test_google_login_otp_with_secret_logs_in() -> None:
     page = FakeLoginPage(
         states=[set(), set(), {_GOOGLE_OTP}, {TIKTOK_LOGIN.verify_selectors[0]}],
         url="https://accounts.google.com/",
+        advance_on=_google_next(),
     )
     result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
         page,
@@ -276,6 +348,60 @@ def test_google_login_otp_with_secret_logs_in() -> None:
         ),
     )
     assert result.outcome == LoginOutcome.LOGGED_IN
+
+
+def test_google_login_wrong_password_is_bad_credential_not_logged_in() -> None:
+    # SAI mật khẩu Google: ô mật khẩu VẪN còn + có thông báo lỗi sau khi submit → BAD_CREDENTIAL, TUYỆT ĐỐI
+    # không LOGGED_IN (INV-1/INV-2). Nếu không chặn ở đây, cookie session cũ còn sót sẽ tạo LOGGED_IN giả.
+    from fastcheck_worker.login.google_login import _GOOGLE_PASSWORD, _GOOGLE_PASSWORD_ERROR
+
+    page = FakeLoginPage(
+        states=[set(), {_GOOGLE_PASSWORD}, {_GOOGLE_PASSWORD, _GOOGLE_PASSWORD_ERROR[0]}],
+        url="https://accounts.google.com/",
+        advance_on=_google_next(),
+    )
+    result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="sai")
+    )
+    assert result.outcome == LoginOutcome.BAD_CREDENTIAL
+    assert result.detail == "google_wrong_password"
+    assert result.fresh_cookie is None  # KHÔNG chụp cookie chết làm "fresh"
+
+
+def test_google_login_password_step_stuck_is_blocked() -> None:
+    # Kẹt ở bước mật khẩu, không rời màn được, KHÔNG có tín hiệu lỗi rõ (Google chặn/bắt xác minh) → BLOCKED
+    # (không LOGGED_IN, không DEAD — INV-1). Đường tin cậy vẫn là login-by-cookie.
+    from fastcheck_worker.login.google_login import _GOOGLE_PASSWORD
+
+    page = FakeLoginPage(
+        states=[set(), {_GOOGLE_PASSWORD}, {_GOOGLE_PASSWORD}],
+        url="https://accounts.google.com/",
+        advance_on=_google_next(),
+    )
+    result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
+    )
+    assert result.outcome == LoginOutcome.BLOCKED
+    assert result.detail == "google_password_step_stuck"
+
+
+def test_google_login_stale_cookie_without_guard_is_dead_not_logged_in() -> None:
+    # HỒI QUY bug thật: qua bước mật khẩu nhưng OAuth KHÔNG lập được phiên (không thấy guard DOM), trong khi
+    # profile GemLogin còn cookie `sessionid` CŨ. _verify KHÔNG được tin "tên cookie có mặt" → phải COOKIE_DEAD,
+    # KHÔNG LOGGED_IN (nếu không, "báo login thành công nhưng nạp pool test guard fail").
+    class _StaleCookiePage(FakeLoginPage):
+        def cookie_names(self) -> set[str]:
+            return {"sessionid"}  # cookie CŨ còn sót — KHÔNG chứng minh phiên còn sống server-side
+
+    page = _StaleCookiePage(
+        states=[set(), set(), set()], url="https://www.tiktok.com/", advance_on=_google_next()
+    )
+    result = get_login_strategy(Platform.TIKTOK, LoginMethod.INFO).login(
+        page, Credential(method=LoginMethod.INFO, username="me@gmail.com", password="p")
+    )
+    assert result.outcome == LoginOutcome.COOKIE_DEAD
+    assert result.detail == "google_verify_guard_failed"
+    assert result.fresh_cookie is None
 
 
 def test_info_login_not_supported_for_facebook() -> None:

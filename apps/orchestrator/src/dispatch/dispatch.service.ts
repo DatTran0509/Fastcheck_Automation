@@ -419,8 +419,37 @@ export class DispatchService {
    * orchestrator MÃ HOÁ (packages/crypto, INV-12) rồi lưu vào profiles. Worker KHÔNG tự mã hoá (ADR-0006).
    * KHÔNG log giá trị cookie — chỉ profile_id.
    */
-  async refreshCookie(msg: { profile_id: string; cookie: string }): Promise<void> {
+  async refreshCookie(msg: {
+    profile_id: string;
+    gemlogin_profile_id?: string | null;
+    cookie: string;
+  }): Promise<void> {
     const enc = this.cipher.encrypt(msg.cookie);
+    // Lưu theo gemlogin_profile_id (KHOÁ pool — 1 GemLogin profile = 1 dòng): profile_id của lệnh login do
+    // dashboard tạo là uuid TẠM, không khớp dòng nào → nếu lưu theo nó thì cookie MẤT (bug đã gặp). Chỉ khi
+    // KHÔNG có gemlogin id (luồng dispatch job nội bộ có profile_id thật) mới lưu theo profile_id.
+    if (msg.gemlogin_profile_id) {
+      const n = await profileRepo.updateCookieByGemlogin(
+        this.db,
+        msg.gemlogin_profile_id,
+        enc.ciphertext,
+        enc.keyId,
+      );
+      if (n === 0) {
+        // KHÔNG nuốt (error-handling rule): cảnh báo rõ để operator biết cookie CHƯA lưu vì profile chưa vào
+        // pool. Nạp tài khoản vào pool trước (tạo dòng theo gemlogin id) rồi login lại. KHÔNG log cookie (INV-12).
+        this.logger.warn(
+          { gemlogin_profile_id: msg.gemlogin_profile_id },
+          'cookie_refresh: chưa có profile trong pool cho gemlogin id này → cookie CHƯA lưu (Nạp tài khoản vào pool trước, rồi login lại)',
+        );
+        return;
+      }
+      this.logger.info(
+        { gemlogin_profile_id: msg.gemlogin_profile_id },
+        'cookie refreshed theo gemlogin_profile_id (mã hoá & lưu — INV-12)',
+      );
+      return;
+    }
     await profileRepo.updateCookie(this.db, msg.profile_id, enc.ciphertext, enc.keyId);
     this.logger.info({ profile_id: msg.profile_id }, 'cookie refreshed (mã hoá & lưu — INV-12)');
   }

@@ -190,6 +190,8 @@ export class StationControlController {
     },
   })
   registerAccount(@Body() body: unknown) {
-    return this.control.registerAccount(parse(registerAccountRequestSchema, body));
+    // Bọc run() như các handler khác: ControlError (verify thất bại / station offline) → 503 KÈM thông báo rõ,
+    // KHÔNG để thành 500 "Internal server error" trần (operator không biết vì sao — bug đã gặp).
+    return this.run(() => this.control.registerAccount(parse(registerAccountRequestSchema, body)));
   }
 }

@@ -145,16 +145,23 @@ export class StationControlService {
       if (!req.station_id) {
         throw new ControlError('verify cần station_id (profile nằm ở station nào) — truyền station_id hoặc verify=false');
       }
+      // Cookie để verify: ưu tiên cookie DÁN TAY (req.cookie); nếu không có, dùng cookie ĐÃ LƯU theo gemlogin id
+      // — chính là cookie mà "Chạy login" thành công vừa refresh về (INV-8). Inject cookie THẬT vào browser để
+      // kiểm phiên, KHÔNG lệ thuộc GemLogin có giữ session qua đóng/mở (free thường KHÔNG giữ → COOKIE_DEAD oan).
+      const verifyCookie = req.cookie ?? (await this.loadCookieByGemlogin(req.gemlogin_profile_id));
       const v = await this.runLogin(req.station_id, {
         gemlogin_profile_id: req.gemlogin_profile_id,
         platform: req.platform,
-        method: 'COOKIE', // dùng cookie truyền vào, hoặc session sẵn trong profile (không cookie → kiểm session hiện tại)
-        cookie: req.cookie,
+        method: 'COOKIE',
+        cookie: verifyCookie,
       });
       if (!v.ok) {
+        const hint = verifyCookie
+          ? 'cookie đã lưu có thể đã hết hạn — Chạy login lại để refresh'
+          : "chưa có cookie đã lưu cho profile này — bấm 'Chạy login' THÀNH CÔNG trước (để lưu cookie), rồi Nạp lại";
         throw new ControlError(
           `profile ${req.gemlogin_profile_id} CHƯA đăng nhập ${req.platform} (verify: ${v.detail}) — KHÔNG nạp vào pool. ` +
-            `Kiểm lại: đúng profile? đúng platform? cookie/đăng nhập còn sống? (bỏ qua verify: verify=false)`,
+            `${hint}. (đúng profile? đúng platform? — hoặc bỏ verify: verify=false)`,
         );
       }
     }
@@ -184,6 +191,16 @@ export class StationControlService {
 
   private async loadCookie(profileId: string): Promise<string | undefined> {
     const p = await profileRepo.getProfile(this.db, profileId);
+    if (!p?.cookie_ciphertext || !p.cookie_key_id) return undefined;
+    return this.cipher.decrypt({
+      ciphertext: Buffer.from(p.cookie_ciphertext),
+      keyId: p.cookie_key_id,
+    });
+  }
+
+  /** Giải mã cookie đã lưu theo gemlogin_profile_id (cookie do phiên login thành công refresh về — INV-12). */
+  private async loadCookieByGemlogin(gemloginProfileId: string): Promise<string | undefined> {
+    const p = await profileRepo.getByGemlogin(this.db, gemloginProfileId);
     if (!p?.cookie_ciphertext || !p.cookie_key_id) return undefined;
     return this.cipher.decrypt({
       ciphertext: Buffer.from(p.cookie_ciphertext),

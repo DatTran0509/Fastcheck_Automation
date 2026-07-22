@@ -66,6 +66,26 @@ export async function updateCookie(
 }
 
 /**
+ * Lưu cookie mới theo **gemlogin_profile_id** (KHOÁ pool thật — 1 GemLogin profile = 1 dòng, INV-6). Dùng cho
+ * cookie_refresh sau phiên login thành công: lệnh login do dashboard tạo mang `profile_id` là uuid TẠM (không
+ * khớp dòng nào), nhưng `gemlogin_profile_id` thì khớp dòng đã nạp/mirror → lưu đúng chỗ. Trả số dòng đã cập
+ * nhật (0 = profile chưa vào pool → caller cảnh báo, KHÔNG nuốt). KHÔNG log giá trị cookie (INV-12).
+ */
+export async function updateCookieByGemlogin(
+  db: DB,
+  gemloginProfileId: string,
+  ciphertext: Buffer,
+  keyId: string,
+): Promise<number> {
+  const res = await db
+    .updateTable('profiles')
+    .set({ cookie_ciphertext: ciphertext, cookie_key_id: keyId })
+    .where('gemlogin_profile_id', '=', gemloginProfileId)
+    .executeTakeFirst();
+  return Number(res?.numUpdatedRows ?? 0n);
+}
+
+/**
  * Phiên THÀNH CÔNG: trả về AVAILABLE, hồi `health_score` (cap 100), reset `consecutive_fails`.
  * health_score hồi dần khi các phiên thành công liên tiếp (skill §Health).
  */
@@ -197,6 +217,22 @@ export async function countAvailable(db: DB, platform: Platform): Promise<number
 /** Lấy profile theo id (đọc, không khoá). Dùng để lấy proxy_id khi cần xoay proxy. */
 export async function getProfile(db: DB, profileId: string): Promise<Profile | undefined> {
   return db.selectFrom('profiles').selectAll().where('id', '=', profileId).executeTakeFirst();
+}
+
+/**
+ * Lấy profile theo **gemlogin_profile_id** (KHOÁ pool — 1 GemLogin profile = 1 dòng, INV-6). Dùng để lấy cookie
+ * đã lưu (login thành công vừa refresh theo gemlogin id) mà verify khi "Nạp tài khoản vào pool" cần inject —
+ * KHÔNG lệ thuộc GemLogin có giữ session qua đóng/mở browser. Đọc, không khoá.
+ */
+export async function getByGemlogin(
+  db: DB,
+  gemloginProfileId: string,
+): Promise<Profile | undefined> {
+  return db
+    .selectFrom('profiles')
+    .selectAll()
+    .where('gemlogin_profile_id', '=', gemloginProfileId)
+    .executeTakeFirst();
 }
 
 /**

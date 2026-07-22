@@ -131,6 +131,12 @@ class LoginPage(Protocol):
         chuyển bước login). Dùng để XÁC MINH đã sang bước mới vì X giữ input cũ trong DOM. Hết giờ → False."""
         ...
 
+    def wait_url_contains(self, substring: str, timeout: float) -> bool:
+        """Chờ URL hiện tại CHỨA `substring` tối đa `timeout` giây. Dùng để XÁC MINH đã sang đúng trang (vd
+        'accounts.google.com' sau khi bấm 'Continue with Google') TRƯỚC khi gõ — tránh gõ email vào ô 'Email or
+        username' GỐC của platform khi OAuth chưa mở. Hết giờ → False."""
+        ...
+
     def cookies_string(self) -> str:
         """Xuất cookie hiện tại (JSON) để refresh session sau phiên thành công. KHÔNG log giá trị."""
         ...

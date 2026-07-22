@@ -91,6 +91,14 @@ def _run_real(
             "identity_confirmation_required",
             "confirm_username_required",
             "password_step_required",
+            # Google login kẹt/bị chặn: dump cấu trúc form THẬT để biết nút "Continue with Google"/Next/ô mật
+            # khẩu đổi ra sao (INV-7) — vd nút Google nằm trong iframe/đổi text → google_oauth_not_opened.
+            "google_oauth_not_opened",
+            "google_email_step_stuck",
+            "google_password_step_stuck",
+            "google_blocked_or_verify",
+            # Qua OAuth nhưng verify guard vắng: xem DOM home thật để biết X chưa lập phiên hay guard đổi selector.
+            "google_verify_guard_failed",
         ):
             logger.warning(
                 "DIAG login form (%s): %s", result.detail, login_page.form_diagnostics()
@@ -123,12 +131,22 @@ class _FakeLoginPage:
             # cookie có → guard pass (logged in); cookie rỗng → không thấy guard (COOKIE_DEAD).
             states = [{verify}] if credential.cookie else [set()]
             return cls(states, spec.home_url, ())
-        # INFO qua GOOGLE (TikTok/YouTube): email → enter → password → enter → verify (click_text nút Google
-        # = True; không seed state OTP nên bỏ qua bước 2FA tùy chọn của Google).
+        # INFO qua GOOGLE (TikTok/YouTube): email → Next → password → Next → verify (click_text nút Google =
+        # True; advance_on gồm nút Next của Google để click(Next) chuyển bước + đổi URL cho wait_url_change; không
+        # seed state OTP nên bỏ qua bước 2FA tùy chọn của Google).
         if spec.google_button_texts or spec.google_login_url:
-            from .google_login import _GOOGLE_EMAIL, _GOOGLE_PASSWORD  # noqa: PLC0415 — tránh vòng import
+            from .google_login import (  # noqa: PLC0415 — tránh vòng import
+                _GOOGLE_EMAIL,
+                _GOOGLE_EMAIL_NEXT,
+                _GOOGLE_PASSWORD,
+                _GOOGLE_PASSWORD_NEXT,
+            )
 
-            return cls([{_GOOGLE_EMAIL}, {_GOOGLE_PASSWORD}, {verify}], spec.home_url, ())
+            return cls(
+                [{_GOOGLE_EMAIL}, {_GOOGLE_PASSWORD}, {verify}],
+                spec.home_url,
+                (_GOOGLE_EMAIL_NEXT, _GOOGLE_PASSWORD_NEXT),
+            )
         # INFO gốc (X, passwordless-fallback): username → Enter → password → Enter → verify. _advance nhấn Enter
         # → advance; advance_on gồm submit_selector cho click(submit) ở _handle_otp (next_selector giữ cho chắc).
         if spec.next_selector or spec.next_texts:
@@ -173,7 +191,10 @@ class _FakeLoginPage:
         self._advance_state()
         return True
 
-    def click_text(self, text: str) -> bool:  # noqa: ARG002 — nút "Continue with Google"/"Use password" coi như bấm được
+    def click_text(self, text: str) -> bool:
+        # Mô phỏng bấm "Continue with Google" = redirect OAuth sang Google (để wait_url_contains bắt được).
+        if "Continue with Google" in text:
+            self._url = "https://accounts.google.com/v3/signin/identifier"
         return True
 
     def use_latest_tab(self) -> bool:  # fake: không mô phỏng popup
@@ -187,6 +208,9 @@ class _FakeLoginPage:
 
     def wait_url_change(self, old_url: str, timeout: float) -> bool:  # noqa: ARG002
         return self._url != old_url
+
+    def wait_url_contains(self, substring: str, timeout: float) -> bool:  # noqa: ARG002
+        return substring in self._url
 
     def cookies_string(self) -> str:
         return '[{"name":"sessionid","value":"fresh-fake"}]'

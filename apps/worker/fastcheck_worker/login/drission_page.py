@@ -23,6 +23,10 @@ logger = logging.getLogger("fastcheck.worker.login")
 _SETTLE_AFTER_FILL = 0.7
 # Chờ tìm phần tử form (giây) khi gõ/click — ngắn để không kéo dài job.
 _STEP_LOOKUP_TIMEOUT = 8.0
+# click_text: khớp-CHÍNH-XÁC / contains chỉ nhắm nút THẬT (button/a/role=button) → nếu đúng loại thẻ thì thấy
+# NGAY, dùng timeout NGẮN để KHÔNG treo 8s khi nút không thuộc các thẻ đó (vd nút social TikTok là <div>). Việc
+# CHỜ render dồn vào bước `text:` (bắt mọi biến thể DOM) với _STEP_LOOKUP_TIMEOUT — hết cảnh "đứng im ~10s".
+_CLICK_EXACT_TIMEOUT = 1.5
 # Trần thời gian điều hướng (giây). X là SPA có kết nối bền → 'load' rất lâu; retry=0 + timeout để KHÔNG
 # reload-loop và KHÔNG treo quá command_ack_timeout của orchestrator (60s). Hết giờ vẫn tương tác được.
 _GOTO_TIMEOUT = 20.0
@@ -34,6 +38,20 @@ class DrissionLoginPage:
     def __init__(self, page: ChromiumPage) -> None:
         self._page = page
         self._main_page = page  # tab gốc (platform) để quay lại sau OAuth popup của Google
+        # load_mode 'none': .get() GỬI lệnh điều hướng rồi TRẢ NGAY, KHÔNG chờ event 'load'. Trang login
+        # TikTok & Google OAuth là SPA nặng → 'normal' (mặc định) chờ 'load' làm TREO ~10s trước khi bấm
+        # "Continue with Google" dù nút đã có sẵn trong DOM. 'none' (không 'eager') để trang tải TIẾP các
+        # chunk động thay vì bị hủy — cùng lý do browser/page_source.py. fill/click/wait_present đã có timeout
+        # riêng nên vẫn chờ đúng phần tử cần trước khi thao tác.
+        self._set_fast_load(page)
+
+    @staticmethod
+    def _set_fast_load(page: Any) -> None:
+        # API set.load_mode khác nhau giữa ChromiumPage và ChromiumTab/phiên bản → best-effort, không chặn login.
+        try:
+            page.set.load_mode.none()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("set load_mode none lỗi (%s)", type(exc).__name__)
 
     @property
     def current_url(self) -> str:
@@ -130,11 +148,13 @@ class DrissionLoginPage:
         )
         el = None
         try:
-            el = self._page.ele(exact_xpath, timeout=_STEP_LOOKUP_TIMEOUT)
+            # exact/contains nhắm nút THẬT (button/a/role=button) → timeout NGẮN: đúng loại thẻ thì thấy ngay,
+            # không thì rơi xuống nhanh (KHÔNG treo 8s ở đây khi nút là <div> như nút social TikTok).
+            el = self._page.ele(exact_xpath, timeout=_CLICK_EXACT_TIMEOUT)
             if not el:
-                el = self._page.ele(contains_xpath, timeout=1)
-            if not el:  # fallback: bất kỳ phần tử nào chứa text (rồi click sẽ tự bubble lên nút cha)
-                el = self._page.ele(f"text:{text}", timeout=1)
+                el = self._page.ele(contains_xpath, timeout=_CLICK_EXACT_TIMEOUT)
+            if not el:  # bắt mọi biến thể DOM (click sẽ bubble lên nút cha) — CHỜ render dồn vào đây
+                el = self._page.ele(f"text:{text}", timeout=_STEP_LOOKUP_TIMEOUT)
         except Exception as exc:  # noqa: BLE001 — tìm theo text best-effort
             logger.debug("click_text tìm %r lỗi (%s)", text, type(exc).__name__)
             return False
@@ -174,6 +194,21 @@ class DrissionLoginPage:
             time.sleep(0.25)
         return False
 
+    def wait_url_contains(self, substring: str, timeout: float) -> bool:
+        # Poll URL cho tới khi CHỨA substring (vd 'accounts.google.com') — xác nhận đã sang đúng trang OAuth
+        # trước khi gõ. Poll ngắn như wait_url_change.
+        if not substring:
+            return False
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if substring in str(self._page.url):
+                    return True
+            except Exception as exc:  # noqa: BLE001 — đọc url best-effort
+                logger.debug("wait_url_contains đọc url lỗi (%s)", type(exc).__name__)
+            time.sleep(0.25)
+        return False
+
     def use_latest_tab(self) -> bool:
         # OAuth Google mở tab/popup mới → chuyển thao tác sang tab mới nhất. latest_tab trả tab mới nhất
         # (ChromiumTab) — cùng API ele/input nên gán vào self._page là dùng được. Không có popup → giữ nguyên.
@@ -184,6 +219,7 @@ class DrissionLoginPage:
             return False
         if latest is not None and latest is not self._page:
             self._page = latest
+            self._set_fast_load(latest)  # popup Google cũng là SPA → tránh treo chờ 'load'
             return True
         return False
 
