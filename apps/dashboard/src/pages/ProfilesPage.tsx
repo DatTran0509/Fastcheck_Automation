@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { StationProfileView } from '@fastcheck/contracts';
+import type { ProfileConfig, StationProfileView } from '@fastcheck/contracts';
 import { ORCH_BASE, sendJson } from '../lib/api.js';
 import { useSnapshot } from '../lib/snapshot.js';
 import { PlatformBadge, StatusBadge, cooldownLeft, recommend } from '../lib/format.js';
 import { AccountControls } from '../components/AccountControls.js';
+import { ProfileConfigForm } from '../components/ProfileConfigForm.js';
+
+// Trạng thái mở form Tạo/Sửa profile (mô phỏng panel Update GemLogin, 4 tab).
+interface FormState {
+  mode: 'create' | 'edit';
+  gemId?: string;
+  name?: string;
+  config?: ProfileConfig; // config đã lưu (sync từ DB) để pre-fill form Sửa; undefined → form hiện mặc định
+}
 
 export function ProfilesPage(): JSX.Element {
   const { snap } = useSnapshot();
@@ -13,6 +22,7 @@ export function ProfilesPage(): JSX.Element {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [form, setForm] = useState<FormState | null>(null);
 
   // Chọn station đầu tiên khi có danh sách (thường chỉ 1 dev-station).
   useEffect(() => {
@@ -95,6 +105,14 @@ export function ProfilesPage(): JSX.Element {
                 </option>
               ))}
             </select>
+            <button
+              className="sm primary"
+              onClick={() => setForm({ mode: 'create' })}
+              disabled={!sid}
+              title="Tạo profile với cấu hình vân tay đầy đủ (4 tab GemLogin) — không để GemLogin random"
+            >
+              + Tạo profile (cấu hình đầy đủ)
+            </button>
             <button className="sm" onClick={() => void load()} disabled={loading || !sid}>
               {loading ? <span className="spinner" /> : '↻'} Làm mới
             </button>
@@ -158,14 +176,31 @@ export function ProfilesPage(): JSX.Element {
                       )}
                     </td>
                     <td>
-                      <button
-                        className="sm danger"
-                        onClick={() => void remove(p)}
-                        disabled={deleting != null || !p.gemlogin_profile_id}
-                        title={p.gemlogin_profile_id ? 'Xoá profile khỏi GemLogin + pool' : 'Không có GemLogin id để xoá'}
-                      >
-                        {deleting === p.profile_id ? <span className="spinner" /> : '🗑'} Xoá
-                      </button>
+                      <div className="row">
+                        <button
+                          className="sm"
+                          onClick={() =>
+                            setForm({
+                              mode: 'edit',
+                              gemId: p.gemlogin_profile_id ?? undefined,
+                              name: p.account_label ?? '',
+                              config: p.config ?? undefined,
+                            })
+                          }
+                          disabled={!p.gemlogin_profile_id}
+                          title={p.gemlogin_profile_id ? 'Sửa cấu hình profile (bắn xuống GemLogin)' : 'Không có GemLogin id'}
+                        >
+                          ✎ Sửa
+                        </button>
+                        <button
+                          className="sm danger"
+                          onClick={() => void remove(p)}
+                          disabled={deleting != null || !p.gemlogin_profile_id}
+                          title={p.gemlogin_profile_id ? 'Xoá profile khỏi GemLogin + pool' : 'Không có GemLogin id để xoá'}
+                        >
+                          {deleting === p.profile_id ? <span className="spinner" /> : '🗑'} Xoá
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -174,6 +209,18 @@ export function ProfilesPage(): JSX.Element {
           </table>
         </div>
       </section>
+
+      {form && sid && (
+        <ProfileConfigForm
+          mode={form.mode}
+          stationId={sid}
+          gemloginProfileId={form.gemId}
+          initialName={form.name}
+          initialConfig={form.config}
+          onClose={() => setForm(null)}
+          onSaved={() => void load()}
+        />
+      )}
     </div>
   );
 }

@@ -7,6 +7,8 @@ import { CookieCipher } from '@fastcheck/crypto';
 import type {
   AccountResponse,
   BrowserActionRequest,
+  CdpForwardRequest,
+  CdpForwardResponse,
   CommandPayload,
   CommandResult,
   CreateProfileRequest,
@@ -63,30 +65,69 @@ export class StationControlService {
       status_reason: p.last_error,
       status_reason_at: iso(p.last_error_at),
       cooldown_until: iso(p.cooldown_until),
+      // Config vân tay đã lưu (pg trả object JSONB đã parse) — để form "Sửa" pre-fill đúng. NULL = chưa đặt.
+      config: (p.config_json as StationProfileView['config']) ?? null,
     };
   }
 
   // ── CRUD profile GemLogin (Server → Client, §4) ────────────────────────────────
-  createProfile(stationId: string, req: CreateProfileRequest): Promise<CommandResult> {
-    return this.dispatch(stationId, {
+  // `config` (nếu có) mang vân tay đầy đủ 4 tab GemLogin → forward nguyên vẹn xuống client; client map nhóm
+  // field API-supported sang payload GemLogin (nhóm GUI-only bỏ qua — xem profile-config.ts).
+  async createProfile(stationId: string, req: CreateProfileRequest): Promise<CommandResult> {
+    const res = await this.dispatch(stationId, {
       name: 'profile.create',
       platform: req.platform,
       account_label: req.account_label,
-      proxy: req.proxy,
+      // Proxy: ưu tiên tab Network trong config; fallback field proxy phẳng (tương thích ngược).
+      proxy: req.config?.proxy ?? req.proxy,
+      config: req.config,
     });
+    // Lưu config làm nguồn sự thật server (GemLogin không cho đọc lại fingerprint) → form "Sửa" hiển thị đúng.
+    // res.profile_id = id GemLogin mới (từ ack). Chỉ lưu khi lệnh OK + có config.
+    if (res.ok && req.config && res.profile_id) {
+      await this.persistConfig(stationId, res.profile_id, req.config);
+    }
+    return res;
   }
 
-  updateProfile(
+  async updateProfile(
     stationId: string,
     gemloginProfileId: string,
     req: UpdateProfileRequest,
   ): Promise<CommandResult> {
-    return this.dispatch(stationId, {
+    const res = await this.dispatch(stationId, {
       name: 'profile.update',
       gemlogin_profile_id: gemloginProfileId,
       account_label: req.account_label,
-      proxy: req.proxy,
+      proxy: req.config?.proxy ?? req.proxy,
+      config: req.config,
     });
+    if (res.ok && req.config) {
+      await this.persistConfig(stationId, gemloginProfileId, req.config);
+    }
+    return res;
+  }
+
+  /** Lưu ProfileConfig vào DB (JSONB) theo (station, gemlogin_id) — nguồn sự thật để form pre-fill (sync). */
+  private async persistConfig(
+    stationId: string,
+    gemloginProfileId: string,
+    config: CreateProfileRequest['config'],
+  ): Promise<void> {
+    try {
+      await profileRepo.setProfileConfigByGemlogin(
+        this.db,
+        stationId,
+        gemloginProfileId,
+        JSON.stringify(config),
+      );
+    } catch (err) {
+      // Không nuốt: lệnh GemLogin ĐÃ thành công; lỗi lưu config chỉ ảnh hưởng hiển thị form → log, không ném.
+      this.logger.warn(
+        { station_id: stationId, gemlogin_profile_id: gemloginProfileId, err: (err as Error).message },
+        'lưu config profile vào DB thất bại (lệnh GemLogin vẫn OK) — form Sửa có thể hiện mặc định',
+      );
+    }
   }
 
   deleteProfile(stationId: string, gemloginProfileId: string): Promise<CommandResult> {
@@ -114,6 +155,25 @@ export class StationControlService {
       profile_id: req.profile_id ?? randomUUID(),
       gemlogin_profile_id: req.gemlogin_profile_id,
     });
+  }
+
+  // ── Forward CDP điều khiển browser (§5 — station bắc cầu CDP về relay, WSS+token, INV-12) ───────
+  async startCdpForward(stationId: string, req: CdpForwardRequest): Promise<CdpForwardResponse> {
+    const sessionId = randomUUID();
+    const res = await this.dispatch(stationId, {
+      name: 'cdp.forward',
+      action: 'START',
+      session_id: sessionId,
+      gemlogin_profile_id: req.gemlogin_profile_id,
+      profile_id: req.profile_id,
+    });
+    // attach_path: controller (automation phía server) nối vào relay cùng session để điều khiển browser.
+    // Token đi kèm qua header Authorization hoặc ?token= (INV-12) — KHÔNG nhúng token vào path trả về.
+    return { ...res, session_id: sessionId, attach_path: `/cdp?role=controller&session=${sessionId}` };
+  }
+
+  stopCdpForward(stationId: string, sessionId: string): Promise<CommandResult> {
+    return this.dispatch(stationId, { name: 'cdp.forward', action: 'STOP', session_id: sessionId });
   }
 
   // ── Server GỌI station chạy kịch bản login (§7 — kịch bản lưu phía client) ──────

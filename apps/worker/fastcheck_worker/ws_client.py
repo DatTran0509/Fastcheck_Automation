@@ -26,15 +26,15 @@ from pydantic import BaseModel, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
-from .browser.adapter import ProfileSpec, create_adapter
-from .browser.cdp_forward import CdpForwardPolicy
-from .browser.adapter import GemLoginError
+from .browser.adapter import BrowserHandle, GemLoginError, ProfileSpec, create_adapter
+from .browser.cdp_forward import CdpForwardPolicy, CdpTunnel
 from .config import WorkerConfig
 from .login import LoginError
 from .login.execute import execute_login
 from .contracts import (
     BrowserCloseCommand,
     BrowserOpenCommand,
+    CdpForwardCommand,
     CommandAckMessage,
     CookieRefreshMessage,
     HeartbeatMessage,
@@ -82,6 +82,7 @@ class WorkerClient:
             fake_browser_ttl_seconds=config.fake_browser_ttl_seconds,
             start_wait_seconds=config.browser_start_wait_seconds,
             close_settle_seconds=config.browser_close_settle_seconds,
+            cdp_ready_wait_seconds=config.browser_cdp_ready_wait_seconds,
         )
         # real mode: detector chạy trên browser GemLogin THẬT (adapter dùng chung với browser.open/CRUD).
         # fake mode: adapter=None → detector đọc qua FakePageSource (urllib + fixture), không mở browser.
@@ -93,6 +94,9 @@ class WorkerClient:
         self._monitor = ResourceMonitor(config.browser_ram_limit_mb)
         # Fail-fast nếu bật forward CDP mà thiếu token (INV-12 — không phơi CDP trần).
         self._cdp_policy = CdpForwardPolicy(config.cdp_forward_enabled, config.cdp_forward_token)
+        # Handle browser đang mở theo gemlogin id (để lệnh cdp.forward lấy CDP address). Tunnel CDP theo session.
+        self._open_handles: dict[str, BrowserHandle] = {}
+        self._cdp_tunnels: dict[str, CdpTunnel] = {}
         self._send_lock = asyncio.Lock()  # websockets: không gửi song song trên cùng socket
         self._active_jobs = 0  # current_load cho heartbeat (backpressure — INV-10)
         psutil.cpu_percent()  # prime: lần đọc đầu trả 0.0, các lần sau là delta kể từ lần trước
@@ -109,6 +113,9 @@ class WorkerClient:
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, 30.0)
         finally:
+            for tunnel in list(self._cdp_tunnels.values()):
+                await tunnel.stop()
+            self._cdp_tunnels.clear()
             self._runner.shutdown()
             self._close_all_browsers()
 
@@ -197,6 +204,8 @@ class WorkerClient:
             await self._handle_profile_crud(ws, command.command_id, cmd)
         elif isinstance(cmd, LoginRunCommand):
             await self._handle_login_run(ws, command.command_id, cmd)
+        elif isinstance(cmd, CdpForwardCommand):
+            await self._handle_cdp_forward(ws, command.command_id, cmd)
 
     async def _reply(self, ws: ClientConnection, message: BaseModel, command_id: str) -> None:
         self._command_results[command_id] = message
@@ -299,6 +308,7 @@ class WorkerClient:
             handle = await asyncio.to_thread(self._adapter.open_browser, gid, cmd.cookie or "")
             # Giám sát RAM/PID cây tiến trình browser (INV-9): vượt ngưỡng → kill + giải phóng.
             self._monitor.track(gid, handle.pid)
+            self._open_handles[gid] = handle  # để lệnh cdp.forward lấy CDP address của browser này
             # Forward CDP an toàn (mặc định local, không phơi CDP trần — INV-12).
             decision = self._cdp_policy.decide(handle.cdp_address)
             ack = self._ack(
@@ -323,6 +333,7 @@ class WorkerClient:
         try:
             await asyncio.to_thread(self._adapter.close_browser, gid)
             self._monitor.untrack(gid)
+            self._open_handles.pop(gid, None)  # tunnel CDP (nếu có) tự đóng khi ws CDP local chết
             ack = self._ack(command_id, ok=True, detail="browser closed", profile_id=gid)
         except Exception as exc:  # noqa: BLE001
             logger.warning("browser.close lỗi (%s) cho profile %s", type(exc).__name__, gid)
@@ -339,14 +350,19 @@ class WorkerClient:
         try:
             profile_id: str | None
             if isinstance(cmd, ProfileCreateCommand):
+                # config (vân tay 4 tab) → dict cho adapter; None → GemLogin tự sinh (hành vi cũ).
+                # KHÔNG gán platform lúc tạo (pool tự phân loại khi nạp) — platform có thể None.
+                config = cmd.config.model_dump() if cmd.config is not None else None
+                platform = cmd.platform.value if cmd.platform is not None else None
                 profile_id = await asyncio.to_thread(
                     self._adapter.create_profile,
-                    ProfileSpec(platform=cmd.platform.value, name=cmd.account_label, proxy=cmd.proxy),
+                    ProfileSpec(platform=platform, name=cmd.account_label, proxy=cmd.proxy, config=config),
                 )
                 detail = "profile created"
             elif isinstance(cmd, ProfileUpdateCommand):
                 profile_id = cmd.gemlogin_profile_id
-                changes = {"account_label": cmd.account_label, "proxy": cmd.proxy}
+                config = cmd.config.model_dump() if cmd.config is not None else None
+                changes = {"account_label": cmd.account_label, "proxy": cmd.proxy, "config": config}
                 await asyncio.to_thread(self._adapter.update_profile, profile_id, changes)
                 detail = "profile updated"
             else:  # ProfileDeleteCommand
@@ -416,6 +432,56 @@ class WorkerClient:
         except Exception as exc:  # noqa: BLE001 — không nuốt: log phân loại + trả ok=false
             logger.warning("login.run lỗi (%s) cho profile %s", type(exc).__name__, gid)
             ack = self._ack(command_id, ok=False, detail=f"login_error:{type(exc).__name__}", profile_id=gid)
+        await self._reply(ws, ack, str(command_id))
+
+    # ── cdp.forward (Server GỌI bắc cầu CDP browser về relay orchestrator — §5, Excel forward CDP) ──
+    async def _handle_cdp_forward(
+        self, ws: ClientConnection, command_id: UUID, cmd: CdpForwardCommand
+    ) -> None:
+        session_id = str(cmd.session_id)
+        action = cmd.action.value if hasattr(cmd.action, "value") else str(cmd.action)
+        gid = cmd.gemlogin_profile_id or (str(cmd.profile_id) if cmd.profile_id else "")
+        if action == "STOP":
+            tunnel = self._cdp_tunnels.pop(session_id, None)
+            if tunnel is not None:
+                await tunnel.stop()
+            await self._reply(
+                ws, self._ack(command_id, ok=True, detail="cdp forward stopped", profile_id=gid), str(command_id)
+            )
+            return
+        # START — BẮT BUỘC bật forward + có token (INV-12). Tắt → báo ra rõ, KHÔNG phơi CDP trần.
+        token = self._cdp_policy.token
+        if not self._cdp_policy.enabled or not token:
+            ack = self._ack(
+                command_id,
+                ok=False,
+                detail="cdp_forward_disabled: cần CDP_FORWARD_ENABLED=true + CDP_FORWARD_TOKEN (INV-12)",
+                profile_id=gid,
+            )
+            await self._reply(ws, ack, str(command_id))
+            return
+        try:
+            handle = self._open_handles.get(gid)
+            if handle is None:
+                # Chưa mở browser → mở để lấy CDP address (blocking I/O ngoài event loop).
+                handle = await asyncio.to_thread(self._adapter.open_browser, gid, "")
+                self._monitor.track(gid, handle.pid)
+                self._open_handles[gid] = handle
+            tunnel = CdpTunnel(
+                orchestrator_ws_url=self._config.orchestrator_ws_url,
+                token=token,
+                station_id=self._config.station_id,
+                session_id=session_id,
+                cdp_address=handle.cdp_address,
+            )
+            tunnel.start()
+            self._cdp_tunnels[session_id] = tunnel
+            ack = self._ack(command_id, ok=True, detail="cdp forward started (WSS+token)", profile_id=gid)
+        except GemLoginError as exc:
+            ack = self._ack(command_id, ok=False, detail=f"gemlogin_error:{exc}", profile_id=gid)
+        except Exception as exc:  # noqa: BLE001 — không nuốt: log phân loại + trả ok=false
+            logger.warning("cdp.forward lỗi (%s) cho profile %s", type(exc).__name__, gid)
+            ack = self._ack(command_id, ok=False, detail=f"cdp_forward_error:{type(exc).__name__}", profile_id=gid)
         await self._reply(ws, ack, str(command_id))
 
     # ── Đồng bộ danh sách profile (§3) ───────────────────────────────────────────

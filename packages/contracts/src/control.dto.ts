@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Platform, StationStatus } from '@fastcheck/shared';
+import { profileConfigSchema } from './profile-config.js';
 import { loginMethodSchema } from './ws.protocol.js';
 
 // DTO cho BỀ MẶT ĐIỀU KHIỂN (operator/dashboard → orchestrator REST, phơi qua Swagger /docs).
@@ -50,20 +51,30 @@ export const stationProfileViewSchema = z.object({
   status_reason: z.string().nullish(),
   status_reason_at: z.string().nullish(),
   cooldown_until: z.string().nullish(),
+  // Cấu hình vân tay đã đặt qua dashboard (nguồn sự thật server — GemLogin không cho đọc lại fingerprint).
+  // Dùng để form "Sửa" pre-fill ĐÚNG cấu hình hiện tại (sync), không luôn hiện mặc định. NULL = chưa đặt.
+  config: profileConfigSchema.nullish(),
 });
 export type StationProfileView = z.infer<typeof stationProfileViewSchema>;
 
 // ── POST /stations/:id/profiles (tạo profile GemLogin qua Client) ────────────────────────────
+// `config` (tuỳ chọn) = cấu hình vân tay đầy đủ (4 tab GemLogin). Có config → dashboard chỉ định vân tay cụ
+// thể (KHÔNG để GemLogin random). Bỏ trống → hành vi cũ (chỉ name/proxy, GemLogin tự sinh vân tay).
+// `platform` KHÔNG gán lúc tạo (optional): pool tự phân loại + gán khi "Nạp tài khoản" (POST /accounts).
 export const createProfileRequestSchema = z.object({
-  platform: z.nativeEnum(Platform),
+  platform: z.nativeEnum(Platform).optional(),
   account_label: z.string().optional(),
   proxy: z.string().optional(),
+  config: profileConfigSchema.optional(),
 });
 export type CreateProfileRequest = z.infer<typeof createProfileRequestSchema>;
 
+// Sửa profile: dashboard gửi `config` đầy đủ (mô phỏng panel Update GemLogin) — adapter map nhóm field API
+// hỗ trợ xuống GemLogin (nhóm GUI-only bỏ qua). account_label/proxy giữ để tương thích ngược.
 export const updateProfileRequestSchema = z.object({
   account_label: z.string().optional(),
   proxy: z.string().optional(),
+  config: profileConfigSchema.optional(),
 });
 export type UpdateProfileRequest = z.infer<typeof updateProfileRequestSchema>;
 
@@ -109,6 +120,31 @@ export const registerAccountRequestSchema = z.object({
   verify: z.boolean().optional(),
 });
 export type RegisterAccountRequest = z.infer<typeof registerAccountRequestSchema>;
+
+// ── POST /stations/:id/cdp/forward | /cdp/stop (forward CDP điều khiển browser — §5, INV-12) ──
+// Server ra lệnh station bắc cầu CDP của một browser về relay orchestrator (WSS+token). Trả session_id +
+// attach_path để controller (automation/DevTools proxy phía server) nối vào cùng phiên.
+export const cdpForwardRequestSchema = z.object({
+  gemlogin_profile_id: z.string().min(1),
+  profile_id: z.string().uuid().optional(),
+});
+export type CdpForwardRequest = z.infer<typeof cdpForwardRequestSchema>;
+
+export const cdpStopRequestSchema = z.object({
+  session_id: z.string().uuid(),
+});
+export type CdpStopRequest = z.infer<typeof cdpStopRequestSchema>;
+
+export const cdpForwardResponseSchema = z.object({
+  ok: z.boolean(),
+  command_id: z.string().uuid(),
+  station_id: z.string().uuid(),
+  detail: z.string().nullable(),
+  session_id: z.string().uuid(),
+  // Đường controller nối vào relay orchestrator để điều khiển browser (kèm token qua header/query — INV-12).
+  attach_path: z.string(),
+});
+export type CdpForwardResponse = z.infer<typeof cdpForwardResponseSchema>;
 
 export const accountResponseSchema = z.object({
   profile_id: z.string().uuid(),

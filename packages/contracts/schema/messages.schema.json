@@ -4,6 +4,230 @@
   "additionalProperties": false,
   "description": "FastCheck WS/queue message definitions",
   "definitions": {
+    "ProfileConfig": {
+      "type": "object",
+      "properties": {
+        "os_type": {
+          "type": "string",
+          "enum": [
+            "Windows",
+            "macOS",
+            "Android",
+            "IOS",
+            "Linux"
+          ],
+          "default": "macOS"
+        },
+        "os_version": {
+          "type": "string",
+          "default": "macos13"
+        },
+        "browser_version": {
+          "type": "string",
+          "default": "141"
+        },
+        "startup_url": {
+          "type": "string",
+          "default": ""
+        },
+        "user_agent_mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "custom"
+          ],
+          "default": "auto"
+        },
+        "user_agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "country": {
+          "type": "string",
+          "default": "Vietnam"
+        },
+        "language": {
+          "type": "string",
+          "default": "vi,en"
+        },
+        "time_zone": {
+          "type": "string",
+          "default": "Asia/Ho_Chi_Minh"
+        },
+        "proxy_type": {
+          "type": "string",
+          "enum": [
+            "none",
+            "http",
+            "https",
+            "socks5"
+          ],
+          "default": "none"
+        },
+        "proxy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "web_rtc": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "disabled"
+          ],
+          "default": "disabled"
+        },
+        "screen_resolution": {
+          "type": "string",
+          "enum": [
+            "custom",
+            "random"
+          ],
+          "default": "random"
+        },
+        "resolution": {
+          "type": "string",
+          "default": "1920x1080"
+        },
+        "canvas": {
+          "type": "string",
+          "enum": [
+            "real",
+            "noise"
+          ],
+          "default": "noise"
+        },
+        "webgl_image": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "noise"
+        },
+        "webgl_metadata": {
+          "type": "string",
+          "enum": [
+            "custom",
+            "real",
+            "random"
+          ],
+          "default": "custom"
+        },
+        "webgl_vendor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webgl_renderer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "audio_context": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "noise"
+        },
+        "media_device": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "noise"
+        },
+        "client_rects": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "noise"
+        },
+        "fonts": {
+          "type": "string",
+          "enum": [
+            "default",
+            "custom"
+          ],
+          "default": "default"
+        },
+        "speech_voices": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "noise"
+        },
+        "ssl": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "real"
+        },
+        "plugins": {
+          "$ref": "#/definitions/ProfileConfig/properties/canvas",
+          "default": "noise"
+        },
+        "hardware_concurrency": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 10
+        },
+        "device_memory": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "default": 10
+        },
+        "device_name_mode": {
+          "type": "string",
+          "enum": [
+            "real",
+            "custom"
+          ],
+          "default": "custom"
+        },
+        "device_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mac_address_mode": {
+          "$ref": "#/definitions/ProfileConfig/properties/device_name_mode",
+          "default": "custom"
+        },
+        "mac_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "do_not_track": {
+          "type": "string",
+          "enum": [
+            "default",
+            "open",
+            "close"
+          ],
+          "default": "open"
+        },
+        "flash": {
+          "type": "string",
+          "enum": [
+            "accept",
+            "decline"
+          ],
+          "default": "accept"
+        },
+        "port_scan_protection": {
+          "type": "string",
+          "enum": [
+            "accept",
+            "decline"
+          ],
+          "default": "accept"
+        },
+        "hardware_acceleration": {
+          "type": "string",
+          "enum": [
+            "default",
+            "accept",
+            "decline"
+          ],
+          "default": "accept"
+        }
+      },
+      "additionalProperties": false
+    },
     "StationInfo": {
       "type": "object",
       "properties": {
@@ -471,12 +695,19 @@
           "const": "profile.create"
         },
         "platform": {
-          "type": "string",
-          "enum": [
-            "TIKTOK",
-            "FACEBOOK",
-            "TWITTER",
-            "YOUTUBE"
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "TIKTOK",
+                "FACEBOOK",
+                "TWITTER",
+                "YOUTUBE"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "account_label": {
@@ -490,11 +721,20 @@
             "string",
             "null"
           ]
+        },
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfileConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
-        "name",
-        "platform"
+        "name"
       ],
       "additionalProperties": false
     },
@@ -519,6 +759,16 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "config": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfileConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -618,6 +868,49 @@
       ],
       "additionalProperties": false
     },
+    "CdpForwardCommand": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "const": "cdp.forward"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "START",
+            "STOP"
+          ]
+        },
+        "session_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "profile_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gemlogin_profile_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "session_id"
+      ],
+      "additionalProperties": false
+    },
     "ServerCommand": {
       "type": "object",
       "properties": {
@@ -651,6 +944,9 @@
             },
             {
               "$ref": "#/definitions/LoginRunCommand"
+            },
+            {
+              "$ref": "#/definitions/CdpForwardCommand"
             }
           ]
         }

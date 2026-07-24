@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { checkRequestSchema } from './api.dto.js';
+import { profileConfigSchema } from './profile-config.js';
 import { checkJobMessageSchema } from './queue.payload.js';
 import {
   browserCloseCommandSchema,
   browserOpenCommandSchema,
+  cdpForwardCommandSchema,
   commandAckMessageSchema,
   cookieRefreshMessageSchema,
   heartbeatMessageSchema,
@@ -41,6 +43,7 @@ function buildMessagesSchema(): unknown {
   return zodToJsonSchema(z.object({}).describe('FastCheck WS/queue message definitions'), {
     target: 'jsonSchema7',
     definitions: {
+      ProfileConfig: profileConfigSchema,
       StationInfo: stationInfoSchema,
       StationProfile: stationProfileSchema,
       RegisterMessage: registerMessageSchema,
@@ -57,6 +60,7 @@ function buildMessagesSchema(): unknown {
       ProfileUpdateCommand: profileUpdateCommandSchema,
       ProfileDeleteCommand: profileDeleteCommandSchema,
       LoginRunCommand: loginRunCommandSchema,
+      CdpForwardCommand: cdpForwardCommandSchema,
       ServerCommand: serverCommandSchema,
       RegisteredMessage: registeredMessageSchema,
       CheckJobMessage: checkJobMessageSchema,

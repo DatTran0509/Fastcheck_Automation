@@ -14,6 +14,8 @@ import { ApiBody, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
 import {
   browserActionRequestSchema,
+  cdpForwardRequestSchema,
+  cdpStopRequestSchema,
   createProfileRequestSchema,
   registerAccountRequestSchema,
   runLoginRequestSchema,
@@ -21,8 +23,12 @@ import {
 } from '@fastcheck/contracts';
 import { ControlError, StationControlService } from './station-control.service.js';
 
-/** Parse body qua zod; ZodError → 400 (fail loud, không nuốt lỗi validate). */
-function parse<T>(schema: z.ZodType<T>, body: unknown): T {
+/**
+ * Parse body qua zod; ZodError → 400 (fail loud, không nuốt lỗi validate). Trả về kiểu OUTPUT (`z.infer`) —
+ * quan trọng khi schema có `.default()` (vd ProfileConfig): Input có field optional nhưng Output đã điền
+ * default (required). Dùng generic theo schema để không gộp nhầm Input/Output.
+ */
+function parse<S extends z.ZodTypeAny>(schema: S, body: unknown): z.infer<S> {
   const r = schema.safeParse(body);
   if (!r.success) throw new BadRequestException(r.error.issues);
   return r.data;
@@ -69,8 +75,15 @@ export class StationControlController {
       required: ['platform'],
       properties: {
         platform: { type: 'string', enum: ['TIKTOK', 'FACEBOOK', 'TWITTER', 'YOUTUBE'] },
-        account_label: { type: 'string' },
+        account_label: { type: 'string', description: 'Tên profile (khuyến khích đặt để dễ truy tìm)' },
         proxy: { type: 'string', example: 'http://user:pass@host:port' },
+        config: {
+          type: 'object',
+          description:
+            'Cấu hình vân tay đầy đủ (4 tab GemLogin: Overview/Network/Advanced). Có → chỉ định vân tay cụ ' +
+            'thể thay vì để GemLogin random. Nhóm field GUI-only (SSL/Plugins/Hardware…) chỉ lưu, không bắn ' +
+            'xuống API. Xem ProfileConfig trong packages/contracts.',
+        },
       },
     },
   })
@@ -85,7 +98,16 @@ export class StationControlController {
   @ApiBody({
     schema: {
       type: 'object',
-      properties: { account_label: { type: 'string' }, proxy: { type: 'string' } },
+      properties: {
+        account_label: { type: 'string' },
+        proxy: { type: 'string' },
+        config: {
+          type: 'object',
+          description:
+            'Cấu hình vân tay đầy đủ (mô phỏng panel Update GemLogin). Nhóm field API-supported được bắn ' +
+            'xuống GemLogin; nhóm GUI-only bỏ qua. Xem ProfileConfig trong packages/contracts.',
+        },
+      },
     },
   })
   updateProfile(@Param('id') id: string, @Param('gemId') gemId: string, @Body() body: unknown) {
@@ -163,6 +185,37 @@ export class StationControlController {
   })
   runLogin(@Param('id') id: string, @Body() body: unknown) {
     return this.run(() => this.control.runLogin(id, parse(runLoginRequestSchema, body)));
+  }
+
+  @Post('stations/:id/cdp/forward')
+  @HttpCode(200)
+  @ApiOperation({
+    summary:
+      'Forward CDP điều khiển browser (§5): station bắc cầu CDP một profile về relay orchestrator (WSS+token ' +
+      '— INV-12). Trả session_id + attach_path để controller nối vào. Cần CDP_FORWARD_ENABLED + token.',
+  })
+  @ApiParam({ name: 'id', description: 'station_id (uuid)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['gemlogin_profile_id'],
+      properties: {
+        gemlogin_profile_id: { type: 'string', example: '1' },
+        profile_id: { type: 'string', description: 'uuid profile nội bộ (tuỳ chọn)' },
+      },
+    },
+  })
+  startCdpForward(@Param('id') id: string, @Body() body: unknown) {
+    return this.run(() => this.control.startCdpForward(id, parse(cdpForwardRequestSchema, body)));
+  }
+
+  @Post('stations/:id/cdp/stop')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Dừng forward CDP (đóng tunnel theo session_id)' })
+  @ApiParam({ name: 'id', description: 'station_id (uuid)' })
+  @ApiBody({ schema: { type: 'object', required: ['session_id'], properties: { session_id: { type: 'string' } } } })
+  stopCdpForward(@Param('id') id: string, @Body() body: unknown) {
+    return this.run(() => this.control.stopCdpForward(id, parse(cdpStopRequestSchema, body).session_id));
   }
 
   @Post('accounts')

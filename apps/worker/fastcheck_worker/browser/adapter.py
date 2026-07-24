@@ -65,12 +65,113 @@ class ProfileSummary:
 
 @dataclass(frozen=True)
 class ProfileSpec:
-    """Thông tin tạo profile GemLogin. Cookie/credential KHÔNG đi qua đây (INV-12) — inject lúc mở browser."""
+    """Thông tin tạo profile GemLogin. Cookie/credential KHÔNG đi qua đây (INV-12) — inject lúc mở browser.
 
-    platform: str
+    `config` = ProfileConfig (dict, mirror 4 tab GemLogin) nếu dashboard chỉ định vân tay cụ thể; None → để
+    GemLogin tự sinh (hành vi cũ). `platform` KHÔNG dùng lúc tạo nữa (không gán nền tảng lúc tạo — pool tự
+    phân loại + gán khi "Nạp tài khoản"); giữ lại cho FakeGemLoginAdapter/tương thích, mặc định None.
+    """
+
+    platform: str | None = None
     name: str | None = None
     proxy: str | None = None
+    config: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+# os.type trong ProfileConfig ĐÃ là giá trị GemLogin sẵn (Windows/macOS/Android/IOS/Linux) — chỉ validate.
+_VALID_OS_TYPES = frozenset({"Windows", "macOS", "Android", "IOS", "Linux"})
+# WebRTC — chỉ 2 chế độ Replace/Disable (bỏ 'real'/dùng IP thật). GemLogin dùng CHUỖI `web_rtc` cho CẢ create
+# lẫn update, vocabulary RIÊNG: Replace='noise', Disable='disable' (KHÔNG phải 'disabled').
+# (Trước đây create gửi SỐ `webrtc_mode` nhưng user test 2026-07-24: tạo profile chọn Replace vẫn ra Disable —
+#  GemLogin KHÔNG áp dụng webrtc_mode lúc create → chuyển create sang chuỗi `web_rtc` giống update.)
+_WEBRTC_STR = {"replace": "noise", "disabled": "disable"}
+
+
+def _os_block(config: dict[str, Any]) -> dict[str, str] | None:
+    os_type = config.get("os_type")
+    if os_type not in _VALID_OS_TYPES:
+        return None
+    return {"type": str(os_type), "version": str(config.get("os_version") or "")}
+
+
+def _common_profile_fields(config: dict[str, Any]) -> dict[str, Any]:
+    """Field chung create+update: os, browser_version, user_agent (chỉ khi custom), country/language/time_zone."""
+    p: dict[str, Any] = {}
+    osb = _os_block(config)
+    if osb:
+        p["os"] = osb
+    if config.get("browser_version"):
+        p["browser_version"] = config["browser_version"]
+    # UA chỉ gửi khi custom; auto → để GemLogin tự sinh (khuyến nghị của GemLogin).
+    if config.get("user_agent_mode") == "custom" and config.get("user_agent"):
+        p["user_agent"] = config["user_agent"]
+    if config.get("country"):
+        p["country"] = config["country"]
+    if config.get("language"):
+        p["language"] = config["language"]
+    if config.get("time_zone"):
+        p["time_zone"] = config["time_zone"]
+    return p
+
+
+def profile_config_create_fields(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Map ProfileConfig → body `POST /api/profiles/create`.
+
+    Create dùng CỜ BOOLEAN `is_noise_*`/`is_masked_*`/`is_random_screen` + `startup_urls` (số nhiều) + `web_rtc`
+    (CHUỖI, không phải webrtc_mode số — xem chú thích _WEBRTC_STR). Nhóm GUI-only không có field → không gửi.
+    Fingerprint chi tiết (resolution/webgl_vendor/webgl_renderer) CHỈ set được lúc create (không có ở update).
+    """
+    if not config:
+        return {}
+    p = _common_profile_fields(config)
+    if config.get("startup_url"):
+        p["startup_urls"] = config["startup_url"]  # create: số nhiều
+    p["is_noise_canvas"] = config.get("canvas") == "noise"
+    p["is_noise_webgl"] = config.get("webgl_image") == "noise"
+    p["is_noise_client_rect"] = config.get("client_rects") == "noise"
+    p["is_noise_audio_context"] = config.get("audio_context") == "noise"
+    p["is_random_screen"] = config.get("screen_resolution") == "random"
+    # webgl_metadata: custom HOẶC random đều = mask; 'real' = không mask.
+    p["is_masked_webgl_data"] = config.get("webgl_metadata") in ("custom", "random")
+    p["is_masked_media_device"] = config.get("media_device") == "noise"
+    web_rtc = config.get("web_rtc")
+    if web_rtc in _WEBRTC_STR:
+        p["web_rtc"] = _WEBRTC_STR[web_rtc]  # CHUỖI: noise=Replace, disable=Disable (create cũng dùng chuỗi)
+    # Screen resolution CUSTOM → gửi giá trị cụ thể (best-effort: tên field `resolution` GemLogin chưa xác nhận).
+    if config.get("screen_resolution") == "custom" and config.get("resolution"):
+        p["resolution"] = config["resolution"]
+    # WebGL metadata CUSTOM → Unmasked Vendor/Renderer (GemLogin schema CÓ 2 field này).
+    if config.get("webgl_metadata") == "custom":
+        if config.get("webgl_vendor"):
+            p["webgl_vendor"] = config["webgl_vendor"]
+        if config.get("webgl_renderer"):
+            p["webgl_renderer"] = config["webgl_renderer"]
+    return p
+
+
+def profile_config_update_fields(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Map ProfileConfig → body `POST /api/profiles/update/{id}` — CHỈ field CHUỖI như example (đã test).
+
+    QUAN TRỌNG (user test thực tế): update PHẢI giống example — CHỈ `web_rtc`/`webgl`/`canvas` (CHUỖI) +
+    `startup_url` (số ít) + os/basics. TRỘN THÊM `webrtc_mode`/`is_noise_*` (create-style) khiến GemLogin KHÔNG
+    NHẬN → tuyệt đối không gửi ở update. `web_rtc` dùng vocabulary WRITE riêng (noise=Replace, disable=Disable).
+    Các field vân tay khác (audio/media/client_rects/screen/webgl_metadata) update KHÔNG có field → chỉ đổi
+    được lúc create.
+    """
+    if not config:
+        return {}
+    p = _common_profile_fields(config)
+    if config.get("startup_url"):
+        p["startup_url"] = config["startup_url"]  # update: số ít
+    if config.get("canvas"):
+        p["canvas"] = config["canvas"]  # 'real'|'noise'
+    if config.get("webgl_image"):
+        p["webgl"] = config["webgl_image"]  # update dùng key `webgl`
+    web_rtc = config.get("web_rtc")
+    if web_rtc in _WEBRTC_STR:
+        p["web_rtc"] = _WEBRTC_STR[web_rtc]  # CHUỖI: noise=Replace, disable=Disable
+    return p
 
 
 class GemLoginAdapter(Protocol):
@@ -102,7 +203,7 @@ class FakeGemLoginAdapter:
     def create_profile(self, spec: ProfileSpec) -> str:
         gid = f"fake-{uuid.uuid4().hex[:12]}"
         self._profiles[gid] = ProfileSummary(
-            gemlogin_profile_id=gid, platform=spec.platform, name=spec.name, gem_status="closed"
+            gemlogin_profile_id=gid, platform=spec.platform or "", name=spec.name, gem_status="closed"
         )
         logger.info("fake: tạo profile %s (platform=%s)", gid, spec.platform)
         return gid
@@ -188,6 +289,7 @@ class RealGemLoginAdapter:
         timeout_seconds: float = 30.0,
         start_wait_seconds: float = 180.0,
         close_settle_seconds: float = 2.0,
+        cdp_ready_wait_seconds: float = 30.0,
     ) -> None:
         self._base = api_url.rstrip("/")
         self._timeout = timeout_seconds
@@ -196,6 +298,10 @@ class RealGemLoginAdapter:
         # Nghỉ sau khi ĐÓNG để GemLogin kịp giải phóng profile TRƯỚC khi job kế mở lại — giảm kẹt "being
         # opened" khi dùng lại CÙNG profile liên tiếp (churn). Đủ profile thì gần như không chạm tới đây.
         self._close_settle = close_settle_seconds
+        # Sau khi GemLogin trả CDP address, browser có thể CHƯA có tab 'page' sẵn sàng (rõ nhất khi mở profile
+        # MỚI lần đầu). Chờ tới ngưỡng này để tab điều hướng được thực sự tồn tại rồi mới cho attach — chống
+        # race "browser dựng lên mà kịch bản không thao tác gì, phải chạy lần 2 mới được".
+        self._cdp_ready_wait = cdp_ready_wait_seconds
 
     def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode() if body is not None else None
@@ -216,14 +322,18 @@ class RealGemLoginAdapter:
         return resp.get("data")
 
     def create_profile(self, spec: ProfileSpec) -> str:
-        # note mang platform (GemLogin không có field platform) để đồng bộ (§3) biết profile của nền tảng nào.
-        payload: dict[str, Any] = {
-            "name": spec.name,
-            "note": f"{_PLATFORM_NOTE_PREFIX}{spec.platform}",
-            **spec.extra,
-        }
-        if spec.proxy:
+        # Tên profile = `profile_name` (đúng Swagger GemLogin — KHÔNG phải `name`). KHÔNG gán platform lúc tạo
+        # (pool tự phân loại + gán khi "Nạp tài khoản" — theo yêu cầu người dùng).
+        payload: dict[str, Any] = {}
+        if spec.name:
+            payload["profile_name"] = spec.name
+        # Vân tay cụ thể (dashboard) → format CREATE (cờ bool + web_rtc chuỗi + resolution/webgl_vendor/renderer).
+        # Có config = KHÔNG để GemLogin random.
+        payload.update(profile_config_create_fields(spec.config))
+        # Proxy phẳng chỉ dùng nếu config CHƯA đặt raw_proxy (tương thích ngược tạo nhanh).
+        if spec.proxy and "raw_proxy" not in payload:
             payload["raw_proxy"] = spec.proxy  # GemLogin lưu proxy ở field raw_proxy
+        payload.update(spec.extra)  # hook mở rộng cuối cùng (nếu ai đó truyền field GemLogin thô)
         resp = self._request("POST", "/api/profiles/create", payload)
         data = self._unwrap(resp, "create_profile")
         gid = str((data or {}).get("id", ""))
@@ -232,16 +342,23 @@ class RealGemLoginAdapter:
         return gid
 
     def update_profile(self, gemlogin_profile_id: str, changes: dict[str, Any]) -> None:
-        # Map field nội bộ → field GemLogin. account_label→name, proxy→raw_proxy, platform→note.
+        # Map → field UPDATE của Swagger GemLogin: account_label→`profile_name`, proxy→`raw_proxy`, config→vân
+        # tay (web_rtc/webgl/canvas chuỗi, startup_url số ít…). KHÔNG tự gán platform vào note (pool lo gán).
         body: dict[str, Any] = {}
         if changes.get("account_label") is not None:
-            body["name"] = changes["account_label"]
-        if changes.get("proxy") is not None:
+            body["profile_name"] = changes["account_label"]
+        # Vân tay (panel Update dashboard) → format UPDATE (CHUỖI như example — KHÔNG trộn webrtc_mode/bool).
+        body.update(profile_config_update_fields(changes.get("config")))
+        if changes.get("proxy") is not None and "raw_proxy" not in body:
             body["raw_proxy"] = changes["proxy"]
-        if changes.get("platform") is not None:
-            body["note"] = f"{_PLATFORM_NOTE_PREFIX}{changes['platform']}"
         resp = self._request("POST", f"/api/profiles/update/{gemlogin_profile_id}", body)
         self._unwrap(resp, "update_profile")
+
+    def get_profile(self, gemlogin_profile_id: str) -> dict[str, Any]:
+        """Đọc chi tiết một profile (GET /api/profile/{id}) — dùng để VERIFY field đã 'dính' sau create/update."""
+        resp = self._request("GET", f"/api/profile/{gemlogin_profile_id}")
+        data = self._unwrap(resp, "get_profile")
+        return data if isinstance(data, dict) else {}
 
     def delete_profile(self, gemlogin_profile_id: str) -> None:
         # BẢN FREE: GemLogin trả success=false ("The free version does not work this feature").
@@ -271,8 +388,45 @@ class RealGemLoginAdapter:
         # set.cookies rồi mới .get(url)) — INV-2; open_browser chỉ lo mở GemLogin + lấy CDP address.
         logger.debug("real: mở profile %s (cookie len=%d)", gemlogin_profile_id, len(cookie or ""))
         addr = self._start_and_wait(gemlogin_profile_id)
+        # Chờ browser có tab 'page' điều hướng được TRƯỚC khi trả handle (DrissionPage sẽ attach ngay sau đó).
+        self._wait_cdp_page_target(addr)
         pid = self._pid_for_cdp_address(addr)
         return BrowserHandle(profile_id=gemlogin_profile_id, cdp_address=addr, pid=pid)
+
+    def _wait_cdp_page_target(self, cdp_address: str) -> None:
+        """Chờ tới khi CDP có target `type=page` (tab điều hướng được) rồi mới cho DrissionPage attach.
+
+        Vì sao: `/api/profiles/start` trả `remote_debugging_address` NGAY khi cổng debug listen, nhưng lần đầu
+        mở profile MỚI, Chrome còn dựng tab đầu + áp vân tay → chưa có target `page`. Attach + `.get()` trong
+        khoảng này bị race: lệnh điều hướng rơi vào khoảng trống → "browser dựng lên mà không thao tác gì, chạy
+        lần 2 mới được". Chờ tín hiệu THẬT (có tab page) thay vì đoán/sleep cứng (INV-1). Hết giờ mà vẫn chưa
+        thấy → KHÔNG chặn hẳn (browser có thể vẫn dùng được) nhưng LOG cảnh báo để không hỏng âm thầm.
+        """
+        deadline = time.monotonic() + self._cdp_ready_wait
+        url = f"http://{cdp_address}/json"
+        last_err = "n/a"
+        while True:
+            try:
+                with urllib.request.urlopen(url, timeout=self._timeout) as resp:  # noqa: S310 — CDP local
+                    targets = json.loads(resp.read().decode("utf-8", errors="replace"))
+                if isinstance(targets, list) and any(
+                    isinstance(t, dict) and t.get("type") == "page" for t in targets
+                ):
+                    # Nghỉ rất ngắn cho tab ổn định hẳn trước khi attach (best-effort).
+                    time.sleep(0.3)
+                    return
+            except Exception as exc:  # noqa: BLE001 — cổng CDP có thể chưa sẵn sàng ngay; chờ tiếp, không nuốt
+                last_err = type(exc).__name__
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "CDP %s chưa thấy target 'page' sau %.0fs (lỗi cuối=%s) — vẫn attach thử, "
+                    "kịch bản có thể cần chạy lại",
+                    cdp_address,
+                    self._cdp_ready_wait,
+                    last_err,
+                )
+                return
+            time.sleep(0.5)
 
     def _start_and_wait(self, gid: str) -> str:
         """Gọi start, chờ tới khi có remote_debugging_address (lần đầu có thể tải Chromium — chậm)."""
@@ -333,6 +487,7 @@ def create_adapter(
     fake_browser_ttl_seconds: float = 300.0,
     start_wait_seconds: float = 180.0,
     close_settle_seconds: float = 2.0,
+    cdp_ready_wait_seconds: float = 30.0,
 ) -> GemLoginAdapter:
     """Chọn adapter theo GEMLOGIN_MODE ('fake' | 'real')."""
     if mode == "fake":
@@ -344,5 +499,6 @@ def create_adapter(
             gemlogin_api_url,
             start_wait_seconds=start_wait_seconds,
             close_settle_seconds=close_settle_seconds,
+            cdp_ready_wait_seconds=cdp_ready_wait_seconds,
         )
     raise ValueError(f"GEMLOGIN_MODE không hợp lệ: {mode!r} (chỉ 'fake' | 'real')")

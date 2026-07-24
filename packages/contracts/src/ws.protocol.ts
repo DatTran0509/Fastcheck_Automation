@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { Platform, ProfileHealth, UrlStatus } from '@fastcheck/shared';
+import { profileConfigSchema } from './profile-config.js';
 
 // Giao thức WS Orchestrator ↔ Client App (station). WSS + token (INV-12).
 // Lệnh Server→Client mang command_id để idempotent (INV-14). Message gắn job mang trace_id.
@@ -161,9 +162,13 @@ export const browserCloseCommandSchema = z.object({
 // ── Lệnh CRUD profile GemLogin (Server → Client, §4). profile_id là id phía GemLogin (không phải uuid nội bộ) ──
 export const profileCreateCommandSchema = z.object({
   name: z.literal('profile.create'),
-  platform: z.nativeEnum(Platform),
+  // KHÔNG gán nền tảng lúc tạo (nullish) — pool tự phân loại/gán khi nạp tài khoản.
+  platform: z.nativeEnum(Platform).nullish(),
   account_label: z.string().nullish(),
   proxy: z.string().nullish(),
+  // Cấu hình vân tay đầy đủ (4 tab GemLogin). Có → client map nhóm field API-supported xuống GemLogin thay vì
+  // để GemLogin random. Vắng → hành vi cũ (chỉ name/proxy).
+  config: profileConfigSchema.nullish(),
 });
 
 export const profileUpdateCommandSchema = z.object({
@@ -171,6 +176,7 @@ export const profileUpdateCommandSchema = z.object({
   gemlogin_profile_id: z.string().min(1),
   account_label: z.string().nullish(),
   proxy: z.string().nullish(),
+  config: profileConfigSchema.nullish(),
 });
 
 export const profileDeleteCommandSchema = z.object({
@@ -200,6 +206,19 @@ export const loginRunCommandSchema = z.object({
   confirm_username: z.string().nullish(),
 });
 
+// ── Lệnh FORWARD CDP (Server → Client, §5 / Excel "forward CDP/websocket điều khiển trình duyệt") ──
+// Server ra lệnh station BẮC CẦU (bridge) kênh CDP của một browser đang mở về relay orchestrator, qua WSS +
+// token (INV-12 — KHÔNG phơi CDP trần). action=START: mở tunnel cho session_id; STOP: đóng. Client tự biết
+// orchestrator WS url + token (config); session_id để relay ghép cầu worker↔controller.
+export const cdpForwardCommandSchema = z.object({
+  name: z.literal('cdp.forward'),
+  action: z.enum(['START', 'STOP']),
+  session_id: z.string().uuid(),
+  profile_id: z.string().uuid().nullish(),
+  // Browser đang mở cần forward CDP (id GemLogin). Client tra CDP address từ handle đang mở.
+  gemlogin_profile_id: z.string().nullish(),
+});
+
 export const commandPayloadSchema = z.discriminatedUnion('name', [
   runCommandSchema,
   browserOpenCommandSchema,
@@ -208,6 +227,7 @@ export const commandPayloadSchema = z.discriminatedUnion('name', [
   profileUpdateCommandSchema,
   profileDeleteCommandSchema,
   loginRunCommandSchema,
+  cdpForwardCommandSchema,
 ]);
 export type CommandPayload = z.infer<typeof commandPayloadSchema>;
 

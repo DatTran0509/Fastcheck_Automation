@@ -236,6 +236,37 @@ export async function getByGemlogin(
 }
 
 /**
+ * LƯU CẤU HÌNH VÂN TAY (ProfileConfig) do dashboard đặt cho profile GemLogin — UPSERT theo (station, gemlogin_id).
+ * GemLogin không cho đọc lại fingerprint → server giữ config làm nguồn sự thật để form "Sửa" hiển thị đúng
+ * (sync), không luôn hiện mặc định. Nếu row chưa tồn tại (create trước khi sync mirror kịp) → tạo dòng tối
+ * thiểu (platform NULL, AVAILABLE) mang config; sync sau chỉ cập nhật metadata, KHÔNG chạm config_json.
+ * `configJson` = chuỗi JSON.stringify(ProfileConfig). KHÔNG chứa cookie (INV-12).
+ */
+export async function setProfileConfigByGemlogin(
+  db: DB,
+  stationId: string,
+  gemloginProfileId: string,
+  configJson: string,
+): Promise<void> {
+  await db
+    .insertInto('profiles')
+    .values({
+      gemlogin_profile_id: gemloginProfileId,
+      assigned_station_id: stationId,
+      status: ProfileStatus.AVAILABLE,
+      config_json: configJson,
+    })
+    .onConflict((oc) =>
+      oc
+        .columns(['assigned_station_id', 'gemlogin_profile_id'])
+        .where('gemlogin_profile_id', 'is not', null)
+        .where('assigned_station_id', 'is not', null)
+        .doUpdateSet({ config_json: configJson }),
+    )
+    .execute();
+}
+
+/**
  * ĐỒNG BỘ XOÁ (§3): profile của station mà `gemlogin_profile_id` KHÔNG còn trong danh sách GemLogin hiện tại
  * (`existingIds`) = đã bị XOÁ bên GemLogin → gỡ khỏi pool (DELETE — FK check_logs/check_jobs là ON DELETE SET
  * NULL nên an toàn, giữ lịch sử). Chỉ đụng profile CÓ gemlogin_profile_id (không xoá dòng chưa gán id). Trả id

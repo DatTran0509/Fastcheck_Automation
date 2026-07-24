@@ -13,6 +13,7 @@ from pydantic import Field, TypeAdapter
 from ._contracts_gen import (
     BrowserCloseCommand,
     BrowserOpenCommand,
+    CdpForwardCommand,
     CheckJobMessage,
     CommandAckMessage,
     CookieRefreshMessage,
@@ -42,6 +43,7 @@ JobProgressStep = Step
 __all__ = [
     "BrowserCloseCommand",
     "BrowserOpenCommand",
+    "CdpForwardCommand",
     "CheckJobMessage",
     "CommandAckMessage",
     "CookieRefreshMessage",

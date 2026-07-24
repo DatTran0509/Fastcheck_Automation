@@ -53,6 +53,9 @@ export interface ProfilesTable {
   // Lý do gần nhất profile bị COOLDOWN/DEAD (vd "CHALLENGED: guard đăng nhập thất bại") — hiển thị cho operator.
   last_error: string | null;
   last_error_at: NullableTimestamp;
+  // Cấu hình vân tay (ProfileConfig) do dashboard đặt — NGUỒN SỰ THẬT phía server (GemLogin không cho đọc lại
+  // fingerprint). Đọc: pg trả object JS đã parse. Ghi: truyền chuỗi JSON.stringify. NULL = chưa đặt qua dashboard.
+  config_json: ColumnType<Record<string, unknown> | null, string | null, string | null>;
 }
 
 export interface CheckJobsTable {

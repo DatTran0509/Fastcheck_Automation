@@ -88,6 +88,14 @@ export const apiEnvSchema = z.object({
 
 const nonNegNumber = () => z.coerce.number().nonnegative();
 
+// Bool từ env string: chấp nhận '1'/'true'/'yes' = true; còn lại = false. KHÔNG dùng z.coerce.boolean()
+// (coi mọi chuỗi không rỗng, kể cả 'false', là true — footgun).
+const booleanish = () =>
+  z
+    .string()
+    .optional()
+    .transform((v) => v != null && ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase()));
+
 export const orchestratorEnvSchema = z.object({
   ORCHESTRATOR_HOST: z.string().default('0.0.0.0'),
   ORCHESTRATOR_PORT: port().default(3002),
@@ -148,6 +156,13 @@ export const orchestratorEnvSchema = z.object({
   DASHBOARD_STREAM_INTERVAL_MS: positiveInt().default(2000),
   // Cửa sổ (phút) tính tỷ lệ LIVE/DEAD/INCONCLUSIVE từ check_logs cho dashboard/metrics.
   DASHBOARD_RATIO_WINDOW_MINUTES: positiveInt().default(60),
+
+  // ── Forward CDP an toàn (INV-12, §5) — relay CDP/WS station↔controller qua WSS + token ─────
+  // Bật relay CDP ở orchestrator (path /cdp). Excel yêu cầu forward CDP; INV-12 cấm phơi CDP TRẦN → relay
+  // BẮT BUỘC token khi bật (fail-fast ở CdpRelayGateway.attach). Mặc định TẮT (đường an toàn: login local).
+  CDP_FORWARD_ENABLED: booleanish(),
+  // Token xác thực kênh /cdp (worker tunnel + controller attach). Bật forward mà thiếu → từ chối khởi động.
+  CDP_FORWARD_TOKEN: z.string().optional(),
 });
 
 // ── Schema tổng hợp theo app ──────────────────────────────────────────────────

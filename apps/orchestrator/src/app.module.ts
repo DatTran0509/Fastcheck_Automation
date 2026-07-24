@@ -12,6 +12,7 @@ import { COOKIE_CIPHER, DB_CONN, ENV, LOGGER, REDIS } from './tokens.js';
 import { HealthController } from './health/health.controller.js';
 import { StationRegistryService } from './station-registry/station-registry.service.js';
 import { WsGatewayService } from './ws/ws.gateway.js';
+import { CdpRelayGateway } from './cdp/cdp-relay.gateway.js';
 import { RabbitConsumerService } from './consumer/rabbit.consumer.js';
 import { DispatchService } from './dispatch/dispatch.service.js';
 import { JobPublisher } from './dispatch/job-publisher.js';
@@ -68,6 +69,7 @@ import { StationControlController } from './control/station-control.controller.j
     StationControlService,
     DispatchService,
     WsGatewayService,
+    CdpRelayGateway,
     RabbitConsumerService,
     LeaseReaperService,
     StationMonitorService,

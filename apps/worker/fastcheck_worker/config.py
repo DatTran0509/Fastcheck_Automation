@@ -47,6 +47,9 @@ class WorkerConfig(BaseSettings):
     # Nghỉ (giây) sau khi ĐÓNG browser trước khi profile được mở lại — chống kẹt "being opened" khi dùng lại
     # cùng profile liên tiếp (churn). Đủ profile thì hầu như không chạm; đặt 0 để tắt.
     browser_close_settle_seconds: float = Field(default=2.0, alias="BROWSER_CLOSE_SETTLE_SECONDS")
+    # Giây chờ browser có tab 'page' (CDP target) SAU khi start trả địa chỉ, TRƯỚC khi DrissionPage attach.
+    # Chống race lần đầu mở profile MỚI: browser dựng lên nhưng kịch bản không thao tác gì, phải chạy lần 2.
+    browser_cdp_ready_wait_seconds: float = Field(default=30.0, alias="BROWSER_CDP_READY_WAIT_SECONDS")
     # Giây chờ SPA (FB/TikTok/YouTube) render client-side SAU `load` trước khi chụp text detect. Chụp sớm →
     # trang trắng → no_decisive_signal oan → retry/DLQ. Tăng nếu mạng chậm; giảm để nhanh hơn (đánh đổi độ tin).
     browser_render_settle_seconds: float = Field(default=3.0, alias="BROWSER_RENDER_SETTLE_SECONDS")

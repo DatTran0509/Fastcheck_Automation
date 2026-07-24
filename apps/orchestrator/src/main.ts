@@ -7,6 +7,7 @@ import type { OrchestratorEnv } from '@fastcheck/config';
 import { AppModule } from './app.module.js';
 import { ENV } from './tokens.js';
 import { WsGatewayService } from './ws/ws.gateway.js';
+import { CdpRelayGateway } from './cdp/cdp-relay.gateway.js';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), {
@@ -35,6 +36,8 @@ async function bootstrap(): Promise<void> {
   // Gắn WS server vào chính HTTP server của Nest (cùng cổng, path /ws).
   const httpServer = app.getHttpServer() as HttpServer;
   app.get(WsGatewayService).attach(httpServer);
+  // Relay CDP tại /cdp (WSS + token — INV-12; chỉ mở khi CDP_FORWARD_ENABLED). Forward CDP điều khiển browser.
+  app.get(CdpRelayGateway).attach(httpServer);
 }
 
 bootstrap().catch((err) => {
