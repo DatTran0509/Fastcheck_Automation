@@ -826,7 +826,8 @@
           "type": "string",
           "enum": [
             "COOKIE",
-            "INFO"
+            "INFO",
+            "USERPASS"
           ]
         },
         "cookie": {
@@ -854,6 +855,24 @@
           ]
         },
         "confirm_username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hotmail_email": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hotmail_password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hotmail_token": {
           "type": [
             "string",
             "null"

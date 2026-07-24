@@ -36,6 +36,9 @@ class LoginError(RuntimeError):
 class LoginMethod(str, enum.Enum):
     COOKIE = "COOKIE"
     INFO = "INFO"
+    # X native: username + password + 2FA(TOTP). Nếu X đòi mã 6 số qua email (LoginAcid) ở BẤT KỲ bước nào,
+    # mở tab Outlook lấy mã (token ưu tiên, fallback email/password). Vượt 2FA không gặp LoginAcid thì bỏ qua.
+    USERPASS = "USERPASS"
 
 
 class LoginOutcome(str, enum.Enum):
@@ -64,6 +67,13 @@ class Credential:
     # @username của X cho bước "Confirm your account" (X hỏi @handle để chống bot TRƯỚC bước mật khẩu). Khác
     # `username` (định danh đăng nhập — thường là email). Không có → fallback bấm "Use password" bỏ qua bước này.
     confirm_username: str | None = None
+    # ── USERPASS (X native): hộp thư khôi phục để lấy mã xác minh email (LoginAcid) khi X đòi mã 6 số. ──
+    # `hotmail_token` (Microsoft/RPS token M.C...$$) ưu tiên: inject vào tab Outlook để vào thẳng hộp thư (né
+    # form login + 2FA của Microsoft). Không dùng được → fallback `hotmail_email`/`hotmail_password`. KHÔNG log
+    # (INV-12). Không có gì để lấy mã mà X đòi mã email → OTP_REQUIRED (báo ra, không đoán — INV-1).
+    hotmail_email: str | None = None
+    hotmail_password: str | None = None
+    hotmail_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +100,33 @@ class LoginPage(Protocol):
     def goto(self, url: str) -> None: ...
 
     def has_element(self, *selectors: str) -> bool: ...
+
+    def has_text(self, *needles: str) -> bool:
+        """Trang hiện có CHỨA (không phân biệt hoa/thường) MỘT trong `needles`? Dùng để PHÂN BIỆT màn hình khi
+        selector TRÙNG nhau — vd X dùng CHUNG ô nhập số (`ocfEnterTextTextInput`) cho cả '2FA authenticator' LẪN
+        'mã 6 số gửi qua email' (LoginAcid); chỉ TEXT mới tách được hai màn (vote đa tín hiệu — INV-8). Không
+        khớp → False (KHÔNG coi là lỗi cứng). Test/fake: theo text seed từng state."""
+        ...
+
+    def read_text(self, selector: str) -> str:
+        """Đọc text hiển thị của phần tử `selector` đầu tiên — để BÓC mã 6 số từ email xác minh của X trong hộp
+        thư Outlook. Không thấy → "" (KHÔNG đoán một mã sai — INV-1). Chỉ đọc để bóc mã, KHÔNG log nội dung."""
+        ...
+
+    def set_cookies(self, cookie: str, target_url: str) -> None:
+        """Nạp cookie TRƯỚC điều hướng (INV-2). login-by-cookie dùng để lập phiên; USERPASS dùng để inject
+        Microsoft token vào tab Outlook (vào thẳng hộp thư, né login Microsoft). KHÔNG log giá trị (INV-12)."""
+        ...
+
+    def open_new_tab(self, url: str) -> None:
+        """Mở TAB MỚI trong CÙNG browser tại `url` và chuyển thao tác sang tab đó — USERPASS mở Outlook lấy mã
+        email mà KHÔNG rời phiên login X ở tab gốc (1 browser context, không mở browser mới — INV-6). Sau khi
+        xong PHẢI `close_current_tab()` để quay lại tab X. Test/fake: mô phỏng chuyển ngữ cảnh sang tab phụ."""
+        ...
+
+    def close_current_tab(self) -> None:
+        """Đóng tab phụ hiện tại (Outlook) và quay về tab gốc (X). KHÔNG đóng tab gốc. Test/fake: về lại main."""
+        ...
 
     def cookie_names(self) -> set[str]:
         """Tên cookie hiện có (KHÔNG giá trị — INV-12) cho guard cookie-first. Real: DrissionPage; test: rỗng."""

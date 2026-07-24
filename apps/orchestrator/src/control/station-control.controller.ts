@@ -170,7 +170,7 @@ export class StationControlController {
       properties: {
         gemlogin_profile_id: { type: 'string', example: '1' },
         platform: { type: 'string', enum: ['TIKTOK', 'FACEBOOK', 'TWITTER', 'YOUTUBE'] },
-        method: { type: 'string', enum: ['COOKIE', 'INFO'] },
+        method: { type: 'string', enum: ['COOKIE', 'INFO', 'USERPASS'] },
         profile_id: { type: 'string', description: 'uuid — để dùng cookie đã lưu (method COOKIE)' },
         cookie: { type: 'string' },
         username: { type: 'string', description: 'Định danh đăng nhập (X/TikTok: email tài khoản)' },
@@ -180,6 +180,9 @@ export class StationControlController {
           type: 'string',
           description: '@username của X cho bước "Confirm your account" (chống bot) — chỉ X info-login',
         },
+        hotmail_email: { type: 'string', description: 'Email khôi phục lấy mã 6 số (USERPASS/X)' },
+        hotmail_password: { type: 'string', description: 'Mật khẩu Hotmail (fallback nếu token chết)' },
+        hotmail_token: { type: 'string', description: 'Microsoft auth token (M.C...$$) — inject để vào thẳng hộp thư' },
       },
     },
   })

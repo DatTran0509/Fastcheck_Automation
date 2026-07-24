@@ -403,6 +403,9 @@ class WorkerClient:
                 password=cmd.password,
                 otp_secret=cmd.otp_secret,
                 confirm_username=cmd.confirm_username,
+                hotmail_email=cmd.hotmail_email,
+                hotmail_password=cmd.hotmail_password,
+                hotmail_token=cmd.hotmail_token,
             )
             # ok=true CHỈ khi đăng nhập thật sự thành công; các outcome khác (cookie chết/captcha/OTP) là kết
             # quả CÓ NGHĨA của lệnh (đã chạy) nhưng chưa đăng nhập → ok=false + lý do (không nuốt, INV-1).

@@ -28,6 +28,7 @@ from .base import (
 from .cookie_login import CookieLogin
 from .google_login import GoogleLogin
 from .info_login import InfoLogin
+from .x_userpass_login import XUserPassLogin
 from .forms import FACEBOOK_LOGIN, TIKTOK_LOGIN, TWITTER_LOGIN, YOUTUBE_LOGIN
 
 # login-by-cookie: cả 4 platform (verify selectors lấy từ bảng tín hiệu detector — không lặp lại).
@@ -46,12 +47,25 @@ _INFO: dict[Platform, LoginStrategy] = {
     Platform.TWITTER: GoogleLogin(TWITTER_LOGIN),
     Platform.YOUTUBE: GoogleLogin(YOUTUBE_LOGIN),
 }
+# login-by-userpass: CHỈ X — đăng nhập X NATIVE bằng username + password + 2FA(TOTP), fallback mã email qua
+# Hotmail (LoginAcid). Là lựa chọn thứ 2 cho X bên cạnh INFO (qua Google). TikTok/YouTube dùng Google; FB chỉ cookie.
+_USERPASS: dict[Platform, LoginStrategy] = {
+    Platform.TWITTER: XUserPassLogin(TWITTER_LOGIN),
+}
 
 
 def get_login_strategy(platform: Platform, method: LoginMethod) -> LoginStrategy:
     """Trả strategy đăng nhập cho (platform, method). Fail loud nếu không hỗ trợ (INV-1 — không đoán)."""
     if method == LoginMethod.COOKIE:
         return _COOKIE[platform]
+    if method == LoginMethod.USERPASS:
+        strategy = _USERPASS.get(platform)
+        if strategy is None:
+            raise LoginError(
+                f"login-by-userpass không hỗ trợ cho {platform.value} "
+                "(chỉ X: username+password+2FA; TikTok/YouTube qua Google; Facebook chỉ cookie)"
+            )
+        return strategy
     strategy = _INFO.get(platform)
     if strategy is None:
         raise LoginError(
@@ -71,5 +85,6 @@ __all__ = [
     "LoginPage",
     "LoginResult",
     "LoginStrategy",
+    "XUserPassLogin",
     "get_login_strategy",
 ]

@@ -194,6 +194,9 @@ export class StationControlService {
       password: req.password,
       otp_secret: req.otp_secret,
       confirm_username: req.confirm_username,
+      hotmail_email: req.hotmail_email,
+      hotmail_password: req.hotmail_password,
+      hotmail_token: req.hotmail_token,
     });
   }
 

@@ -55,3 +55,19 @@ def test_info_login_unsupported_for_facebook_raises() -> None:
     # Facebook chỉ login-by-cookie → yêu cầu info → LoginError (báo ra, không đoán).
     with pytest.raises(LoginError):
         _run(platform=Platform.FACEBOOK, method="INFO", username="user", password="pass")
+
+
+def test_userpass_login_x_logs_in() -> None:
+    # X native user/pass + 2FA(TOTP): identifier → password → 2FA → home. Happy-path KHÔNG đụng Hotmail.
+    r = _run(
+        platform=Platform.TWITTER, method="USERPASS", username="u", password="p", otp_secret="JBSWY3DPEHPK3PXP"
+    )
+    assert r.outcome == LoginOutcome.LOGGED_IN
+    assert r.fresh_cookie
+
+
+@pytest.mark.parametrize("platform", [Platform.TIKTOK, Platform.FACEBOOK, Platform.YOUTUBE])
+def test_userpass_login_unsupported_except_x(platform: Platform) -> None:
+    # USERPASS CHỈ cho X (native user/pass). Nền tảng khác → LoginError (báo ra, không đoán — INV-1).
+    with pytest.raises(LoginError):
+        _run(platform=platform, method="USERPASS", username="u", password="p")

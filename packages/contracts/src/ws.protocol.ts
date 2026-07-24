@@ -187,8 +187,13 @@ export const profileDeleteCommandSchema = z.object({
 // ── Lệnh chạy KỊCH BẢN ĐĂNG NHẬP (Server → Client, §7 / spec §4.4) ──────────────
 // Server *gọi* station chạy script login; kịch bản LƯU PHÍA CLIENT (đúng yêu cầu Excel). Client mở browser
 // GemLogin → chạy login (cookie ×4 / info TT&X) → trả `command_ack`. Credential đi qua WSS (mã hoá đường
-// truyền), KHÔNG log giá trị (INV-12). method COOKIE dùng `cookie`; INFO dùng `username`/`password`(/`otp_secret`).
-export const loginMethodSchema = z.enum(['COOKIE', 'INFO']);
+// truyền), KHÔNG log giá trị (INV-12).
+//   COOKIE   → dùng `cookie`.
+//   INFO     → đăng nhập bằng tài khoản Google/OAuth (TikTok/YouTube/X qua "Continue with Google"): username/password(/otp_secret).
+//   USERPASS → đăng nhập X native bằng username+password+2FA(TOTP). Nếu X đòi mã 6 số qua email (LoginAcid) ở
+//              BẤT KỲ bước nào, worker mở tab mới đăng nhập Hotmail lấy mã: `hotmail_token` (inject) ưu tiên,
+//              fallback `hotmail_email`/`hotmail_password`. Vượt được 2FA mà không gặp LoginAcid thì bỏ qua Hotmail.
+export const loginMethodSchema = z.enum(['COOKIE', 'INFO', 'USERPASS']);
 export type LoginMethodDto = z.infer<typeof loginMethodSchema>;
 
 export const loginRunCommandSchema = z.object({
@@ -204,6 +209,11 @@ export const loginRunCommandSchema = z.object({
   // X chèn bước "Confirm your account" (hỏi @username) khi nghi bot, TRƯỚC bước mật khẩu/OTP. Đây là @handle
   // của X (khác `username` — thứ dùng để đăng nhập, thường là email). Chỉ dùng cho X info-login.
   confirm_username: z.string().nullish(),
+  // USERPASS (X native): hộp thư khôi phục để lấy mã xác minh email (LoginAcid). KHÔNG log (INV-12).
+  hotmail_email: z.string().nullish(),
+  hotmail_password: z.string().nullish(),
+  // Microsoft/RPS auth token (M.C...$$) — inject cookie để vào thẳng hộp thư, né form login + 2FA của Microsoft.
+  hotmail_token: z.string().nullish(),
 });
 
 // ── Lệnh FORWARD CDP (Server → Client, §5 / Excel "forward CDP/websocket điều khiển trình duyệt") ──

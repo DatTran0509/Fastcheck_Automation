@@ -49,6 +49,21 @@ class FakeLoginPage:
         cur = self._states[self._i]
         return any(s in cur for s in selectors if s)
 
+    def has_text(self, *needles: str) -> bool:  # noqa: ARG002 — flow cũ không dùng text
+        return False
+
+    def read_text(self, selector: str) -> str:  # noqa: ARG002
+        return ""
+
+    def set_cookies(self, cookie: str, target_url: str) -> None:  # noqa: ARG002 — no-op ở fake
+        return None
+
+    def open_new_tab(self, url: str) -> None:  # noqa: ARG002
+        return None
+
+    def close_current_tab(self) -> None:
+        return None
+
     def fill(self, selector: str, text: str) -> bool:
         self.filled[selector] = text
         return True
@@ -227,7 +242,7 @@ def test_info_login_x_form_error_when_field_missing() -> None:
         def fill(self, selector: str, text: str) -> bool:  # noqa: ARG002
             return False
 
-    page = _NoFieldPage(states=[set()], url="https://x.com/i/jf/onboarding/web?mode=login")
+    page = _NoFieldPage(states=[set()], url="https://x.com")
     result = _x_native_info().login(
         page, Credential(method=LoginMethod.INFO, username="u", password="p")
     )

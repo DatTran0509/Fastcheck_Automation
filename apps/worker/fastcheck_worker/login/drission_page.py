@@ -30,6 +30,9 @@ _CLICK_EXACT_TIMEOUT = 1.5
 # Trần thời gian điều hướng (giây). X là SPA có kết nối bền → 'load' rất lâu; retry=0 + timeout để KHÔNG
 # reload-loop và KHÔNG treo quá command_ack_timeout của orchestrator (60s). Hết giờ vẫn tương tác được.
 _GOTO_TIMEOUT = 20.0
+# Modal login của X ([role=dialog]/[aria-modal]) CHỒNG lên trang nền (home khi CHƯA đăng nhập cũng có ô/nút
+# trùng) → ưu tiên tìm TRONG modal (xem `_dialog`); không có modal (login full-page / trang Google) → tìm toàn
+# trang như cũ (không đổi hành vi GoogleLogin/CookieLogin).
 
 
 class DrissionLoginPage:
@@ -74,15 +77,10 @@ class DrissionLoginPage:
             logger.warning("login: set cookie lỗi (%s) — guard sẽ bắt (COOKIE_DEAD, không đoán)", type(exc).__name__)
 
     def has_element(self, *selectors: str) -> bool:
-        for sel in selectors:
-            if not sel:
-                continue
-            try:
-                if self._page.ele(f"css:{sel}", timeout=0):
-                    return True
-            except Exception as exc:  # noqa: BLE001 — selector giòn không làm hỏng login
-                logger.debug("selector %r lỗi (%s)", sel, type(exc).__name__)
-        return False
+        # CHỈ tính phần tử ĐANG HIỂN THỊ. X render sẵn/giữ input ẩn của bước khác (vd ô `input[name=password]` ẩn
+        # ngay ở màn nhập TÀI KHOẢN) → nếu tính cả phần tử ẩn thì _classify nhận nhầm màn (bước 0 thành
+        # 'password' rồi điền mật khẩu vào ô tài khoản). Chỉ tin VISIBLE để phân biệt đúng màn (skill: đa tín hiệu).
+        return any(sel and self._visible_ele(sel, 0.0) is not None for sel in selectors)
 
     def fill(self, selector: str, text: str) -> bool:
         el = self._safe_ele(selector, timeout=_STEP_LOOKUP_TIMEOUT)
@@ -148,9 +146,19 @@ class DrissionLoginPage:
         )
         el = None
         try:
+            # Ưu tiên nút TRONG modal login (nền + modal cùng có nút 'Continue'/'Continue with Google' → click nút
+            # nền khuất = không tiến). xpath tương đối ('.//') để tìm trong dialog; không thấy → tìm toàn trang.
+            dialog = self._dialog()
+            if dialog is not None:
+                rel_exact = exact_xpath.replace("xpath://", "xpath:.//").replace(" | //", " | .//")
+                rel_contains = contains_xpath.replace("xpath://", "xpath:.//").replace(" | //", " | .//")
+                el = dialog.ele(rel_exact, timeout=_CLICK_EXACT_TIMEOUT) or dialog.ele(
+                    rel_contains, timeout=_CLICK_EXACT_TIMEOUT
+                )
             # exact/contains nhắm nút THẬT (button/a/role=button) → timeout NGẮN: đúng loại thẻ thì thấy ngay,
             # không thì rơi xuống nhanh (KHÔNG treo 8s ở đây khi nút là <div> như nút social TikTok).
-            el = self._page.ele(exact_xpath, timeout=_CLICK_EXACT_TIMEOUT)
+            if not el:
+                el = self._page.ele(exact_xpath, timeout=_CLICK_EXACT_TIMEOUT)
             if not el:
                 el = self._page.ele(contains_xpath, timeout=_CLICK_EXACT_TIMEOUT)
             if not el:  # bắt mọi biến thể DOM (click sẽ bubble lên nút cha) — CHỜ render dồn vào đây
@@ -173,13 +181,22 @@ class DrissionLoginPage:
                 return False
 
     def wait_present(self, selector: str, timeout: float) -> bool:
+        # Chờ MỘT selector con (tách dấu phẩy — né lỗi khớp css-list của DrissionPage) XUẤT HIỆN trong DOM. Đây
+        # là chờ "màn đã render" (settle) nên chỉ cần CÓ MẶT, không cần hiển thị. Poll để không phụ thuộc css-list.
         if not selector:
             return False
-        try:
-            return bool(self._page.ele(f"css:{selector}", timeout=timeout))
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("wait_present %r lỗi (%s)", selector, type(exc).__name__)
-            return False
+        parts = self._parts(selector)
+        deadline = time.time() + max(timeout, 0.0)
+        while True:
+            for part in parts:
+                try:
+                    if self._page.ele(f"css:{part}", timeout=0):
+                        return True
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("wait_present %r lỗi (%s)", part, type(exc).__name__)
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.2)
 
     def wait_url_change(self, old_url: str, timeout: float) -> bool:
         # X là SPA hash-routing (#/s/knowledge_check → bước kế) → URL đổi khi chuyển bước. Đây là tín hiệu ĐÁNG
@@ -226,6 +243,56 @@ class DrissionLoginPage:
     def use_main_tab(self) -> None:
         self._page = self._main_page
 
+    def open_new_tab(self, url: str) -> None:
+        # Mở TAB MỚI trong CÙNG browser (1 context — INV-6) rồi chuyển thao tác sang tab đó. USERPASS dùng để mở
+        # Outlook lấy mã email mà KHÔNG rời tab login X. new_tab(url) của DrissionPage 4.x trả ChromiumTab (cùng
+        # API ele/input). Lỗi → giữ nguyên tab hiện tại (reader sẽ thấy inbox không sẵn sàng → fallback/None).
+        try:
+            tab = self._main_page.new_tab(url)
+        except Exception as exc:  # noqa: BLE001 — mở tab lỗi = không lấy được mã (báo ra ở reader, không đoán)
+            logger.warning("open_new_tab lỗi (%s) — không mở được tab Outlook", type(exc).__name__)
+            return
+        self._page = tab
+        self._set_fast_load(tab)
+
+    def close_current_tab(self) -> None:
+        # Đóng tab phụ (Outlook) rồi quay về tab gốc (X). CHỈ đóng khi KHÁC tab gốc — đóng tab gốc = đóng browser
+        # (browser do GemLogin quản, đóng ở execute.finally — INV-9). Luôn trỏ lại main dù đóng có lỗi.
+        cur = self._page
+        if cur is not self._main_page:
+            try:
+                cur.close()
+            except Exception as exc:  # noqa: BLE001 — đóng tab best-effort, không chặn trả kết quả
+                logger.debug("close_current_tab lỗi (%s)", type(exc).__name__)
+        self._page = self._main_page
+
+    def has_text(self, *needles: str) -> bool:
+        # Đọc text hiển thị của <body> (không phân biệt hoa/thường) để phân biệt màn hình khi selector trùng —
+        # vd X dùng chung ô số cho '2FA app' lẫn 'mã qua email'. KHÔNG log nội dung (INV-12). Lỗi/không có → False.
+        wanted = [n.lower() for n in needles if n]
+        if not wanted:
+            return False
+        try:
+            body = self._page.ele("tag:body", timeout=0)
+            text = (body.text if body else "") or ""
+        except Exception as exc:  # noqa: BLE001 — đọc text best-effort, không làm hỏng login
+            logger.debug("has_text đọc body lỗi (%s)", type(exc).__name__)
+            return False
+        haystack = text.lower()
+        return any(n in haystack for n in wanted)
+
+    def read_text(self, selector: str) -> str:
+        # Text của phần tử đầu khớp `selector` (bóc mã 6 số từ email X trong Outlook). Không thấy → "" (không
+        # đoán mã sai — INV-1). KHÔNG log nội dung (INV-12).
+        el = self._safe_ele(selector, timeout=_STEP_LOOKUP_TIMEOUT)
+        if el is None:
+            return ""
+        try:
+            return (el.text or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("read_text %r lỗi (%s)", selector, type(exc).__name__)
+            return ""
+
     def cookies_string(self) -> str:
         # Xuất cookie hiện tại dạng JSON (list dict) để orchestrator mã hoá & refresh. KHÔNG log giá trị.
         try:
@@ -268,13 +335,68 @@ class DrissionLoginPage:
             logger.debug("form_diagnostics lỗi (%s)", type(exc).__name__)
         return {"url": self.current_url, "inputs": inputs, "buttons": buttons}
 
+    @staticmethod
+    def _parts(selector: str) -> list[str]:
+        # Tách CSS-list (dấu phẩy) thành TỪNG selector con → tìm từng cái. Né lỗi khớp css-list của DrissionPage
+        # (đầu mối khiến `input[name=password]` khớp nhầm ô tài khoản) VÀ cho phép lọc theo phần tử hiển thị.
+        # Selector trong dự án không có dấu phẩy lồng trong ngoặc nên tách thô theo ',' là an toàn.
+        return [p.strip() for p in selector.split(",") if p.strip()]
+
+    @staticmethod
+    def _is_displayed(el: Any) -> bool:
+        # `is_displayed` có thể là property hoặc method tuỳ phiên bản DrissionPage → xử cả hai. Không xác định
+        # được → coi như HIỂN THỊ (không chặn thao tác khi API đổi).
+        try:
+            disp = el.states.is_displayed
+            return bool(disp() if callable(disp) else disp)
+        except Exception:  # noqa: BLE001
+            return True
+
+    def _dialog(self) -> Any:
+        # Modal login đang mở (nếu có). Tìm từng phần (né css-list). Không có → None → tìm toàn trang.
+        for part in ('[role="dialog"]', '[aria-modal="true"]'):
+            try:
+                el = self._page.ele(f"css:{part}", timeout=0)
+                if el:
+                    return el
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("tìm dialog %r lỗi (%s)", part, type(exc).__name__)
+        return None
+
+    def _visible_ele(self, selector: str, timeout: float) -> Any:
+        # Phần tử ĐANG HIỂN THỊ đầu tiên khớp `selector`, ưu tiên trong modal login (dialog) rồi toàn trang. Poll
+        # tới `timeout` để chờ render. QUAN TRỌNG: chỉ nhận VISIBLE — X giữ input ẩn của bước khác trong DOM
+        # (ô password ẩn ở màn nhập tài khoản) → tin phần tử ẩn = nhận nhầm màn + điền nhầm ô (bug bước 0='password').
+        parts = self._parts(selector)
+        deadline = time.time() + max(timeout, 0.0)
+        while True:
+            for root in (r for r in (self._dialog(), self._page) if r is not None):
+                for part in parts:
+                    try:
+                        els = cast("list[Any]", root.eles(f"css:{part}", timeout=0))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("tìm %r lỗi (%s)", part, type(exc).__name__)
+                        continue
+                    for el in els:
+                        if self._is_displayed(el):
+                            return el
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.2)
+
     def _safe_ele(self, selector: str, timeout: float) -> Any:
         # DrissionPage không có type stub → trả Any (mypy cho phép .input()/.click()/.clear()).
         if not selector:
             return None
-        try:
-            el = self._page.ele(f"css:{selector}", timeout=timeout)
-            return el or None
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("tìm phần tử %r lỗi (%s)", selector, type(exc).__name__)
-            return None
+        el = self._visible_ele(selector, timeout)
+        if el is not None:
+            return el
+        # Không có phần tử HIỂN THỊ khớp → thử phần tử bất kỳ (kể cả ẩn) để không chặn cứng khi is_displayed sai.
+        for part in self._parts(selector):
+            try:
+                found = self._page.ele(f"css:{part}", timeout=0)
+                if found:
+                    return found
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("tìm phần tử %r lỗi (%s)", part, type(exc).__name__)
+        return None

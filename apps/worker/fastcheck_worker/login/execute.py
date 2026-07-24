@@ -47,6 +47,9 @@ def execute_login(
     password: str | None,
     otp_secret: str | None,
     confirm_username: str | None = None,
+    hotmail_email: str | None = None,
+    hotmail_password: str | None = None,
+    hotmail_token: str | None = None,
 ) -> LoginResult:
     """Chạy kịch bản login → LoginResult. Ném LoginError nếu (platform, method) không hỗ trợ (fail loud)."""
     login_method = LoginMethod(method)
@@ -57,6 +60,9 @@ def execute_login(
         password=password,
         otp_secret=otp_secret,
         confirm_username=confirm_username,
+        hotmail_email=hotmail_email,
+        hotmail_password=hotmail_password,
+        hotmail_token=hotmail_token,
     )
     strategy = get_login_strategy(platform, login_method)  # FB/YT + INFO → LoginError (đúng phạm vi)
     spec = _FORMS[platform]
@@ -99,6 +105,12 @@ def _run_real(
             "google_blocked_or_verify",
             # Qua OAuth nhưng verify guard vắng: xem DOM home thật để biết X chưa lập phiên hay guard đổi selector.
             "google_verify_guard_failed",
+            # USERPASS (X native): X đổi DOM / kẹt màn / không nhận diện được → dump form để sửa selector.
+            "unknown_screen",
+            "password_field_not_found",
+            "otp_field_not_found",
+            "email_code_field_not_found",
+            "verify_guard_failed",
         ):
             logger.warning(
                 "DIAG login form (%s): %s", result.detail, login_page.form_diagnostics()
@@ -118,11 +130,19 @@ class _FakeLoginPage:
     Seed theo credential để chạy đúng NHÁNH của strategy thật (chứng minh đường lệnh login.run end-to-end).
     """
 
-    def __init__(self, states: list[set[str]], url: str, advance_on: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        states: list[set[str]],
+        url: str,
+        advance_on: tuple[str, ...],
+        texts: list[set[str]] | None = None,
+    ) -> None:
         self._states = states
         self._i = 0
         self._url = url
         self._advance_on = {s for s in advance_on if s}
+        # Text hiển thị theo từng state (cho has_text) — USERPASS phân biệt màn 2FA vs mã email bằng text.
+        self._texts = texts or [set() for _ in states]
 
     @classmethod
     def for_credential(cls, spec: LoginFormSpec, credential: Credential) -> _FakeLoginPage:
@@ -131,6 +151,14 @@ class _FakeLoginPage:
             # cookie có → guard pass (logged in); cookie rỗng → không thấy guard (COOKIE_DEAD).
             states = [{verify}] if credential.cookie else [set()]
             return cls(states, spec.home_url, ())
+        # USERPASS (X native): identifier → password → [2FA nếu có otp_secret] → home. Happy-path dùng TOTP (không
+        # đụng Hotmail); ô số mặc định là 2FA (has_text email = False). Chứng minh đường lệnh login.run USERPASS.
+        if credential.method == LoginMethod.USERPASS:
+            states = [{spec.username_selector}, {spec.password_selector}]
+            if credential.otp_secret:
+                states.append({spec.otp_selectors[0]})
+            states.append({verify})
+            return cls(states, "https://x.com", (spec.next_selector, spec.submit_selector))
         # INFO qua GOOGLE (TikTok/YouTube): email → Next → password → Next → verify (click_text nút Google =
         # True; advance_on gồm nút Next của Google để click(Next) chuyển bước + đổi URL cho wait_url_change; không
         # seed state OTP nên bỏ qua bước 2FA tùy chọn của Google).
@@ -168,6 +196,19 @@ class _FakeLoginPage:
     def has_element(self, *selectors: str) -> bool:
         cur = self._states[self._i]
         return any(s in cur for s in selectors if s)
+
+    def has_text(self, *needles: str) -> bool:
+        cur = self._texts[self._i]
+        return any(n in cur for n in needles if n)
+
+    def read_text(self, selector: str) -> str:  # noqa: ARG002 — happy-path USERPASS không đọc mail
+        return ""
+
+    def open_new_tab(self, url: str) -> None:  # noqa: ARG002 — happy-path không mở Outlook
+        return None
+
+    def close_current_tab(self) -> None:
+        return None
 
     def cookie_names(self) -> set[str]:
         # Fake: không mô phỏng cookie → rỗng → cookie_login dùng fallback DOM (state đã seed sẵn guard).

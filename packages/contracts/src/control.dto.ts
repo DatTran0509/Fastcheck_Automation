@@ -87,7 +87,8 @@ export const browserActionRequestSchema = z.object({
 export type BrowserActionRequest = z.infer<typeof browserActionRequestSchema>;
 
 // ── POST /stations/:id/login (server GỌI station chạy kịch bản login — §7) ────────────────────
-// method=COOKIE dùng `cookie` (hoặc cookie đã lưu theo profile_id); method=INFO dùng username/password.
+// method=COOKIE dùng `cookie` (hoặc cookie đã lưu theo profile_id); method=INFO dùng username/password (Google
+// OAuth); method=USERPASS dùng username/password/otp_secret + hotmail_* (X native + fallback mã email).
 // Credential đi qua WSS xuống Client, KHÔNG log (INV-12).
 export const runLoginRequestSchema = z.object({
   gemlogin_profile_id: z.string().min(1),
@@ -101,6 +102,10 @@ export const runLoginRequestSchema = z.object({
   otp_secret: z.string().optional(),
   // @handle của X cho bước "Confirm your account" (chống bot) — khác `username` (email đăng nhập). Chỉ X.
   confirm_username: z.string().optional(),
+  // USERPASS (X native): hộp thư khôi phục lấy mã xác minh email — token ưu tiên, fallback email/password.
+  hotmail_email: z.string().optional(),
+  hotmail_password: z.string().optional(),
+  hotmail_token: z.string().optional(),
 });
 export type RunLoginRequest = z.infer<typeof runLoginRequestSchema>;
 

@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
-import { ORCH_BASE, PLATFORMS, sendJson } from '../lib/api.js';
+import { ORCH_BASE, PLATFORMS } from '../lib/api.js';
+import { postJson } from '../lib/http.js';
+import { parseAccountLine } from '../lib/account-parser.js';
+import { useNotify } from '../lib/notifications.js';
 import { useSnapshot } from '../lib/snapshot.js';
 
 // Đoán nền tảng từ DOMAIN cookie (chống chọn nhầm nền tảng → chạy sai kịch bản login). Chỉ CẢNH BÁO.
@@ -98,18 +101,28 @@ function ResultPanel({ ok, status, name, data }: ActResult): JSX.Element {
 /** Bảng điều khiển: tạo/mở/tắt profile, chạy login (cookie/info), nạp tài khoản vào pool (Station Mgmt — mục 2). */
 export function AccountControls({ onRegistered }: { onRegistered?: () => void }): JSX.Element {
   const { snap } = useSnapshot();
+  const { notify } = useNotify();
   const stations = snap?.stations ?? [];
 
   const [sid, setSid] = useState('');
   const [platform, setPlatform] = useState<string>('TIKTOK');
   const [gemId, setGemId] = useState('');
-  const [method, setMethod] = useState<'COOKIE' | 'INFO'>('COOKIE');
+  // loginKind = lựa chọn cấp cao (cookie / đăng nhập bằng tài khoản). Với X, "tài khoản" tách 2 nhánh qua xVariant.
+  const [loginKind, setLoginKind] = useState<'COOKIE' | 'INFO'>('COOKIE');
+  // X: GMAIL (qua Google — method INFO) hoặc USERPASS (native user/pass/2FA + mã email Hotmail — method USERPASS).
+  const [xVariant, setXVariant] = useState<'GMAIL' | 'USERPASS'>('GMAIL');
   const [cookie, setCookie] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState('');
   // @username của X cho bước "Confirm your account" (khác `username` = email/định danh đăng nhập). Chỉ X.
   const [confirmUsername, setConfirmUsername] = useState('');
+  // USERPASS (X native): hộp thư khôi phục lấy mã 6 số khi X đòi (LoginAcid). Token ưu tiên, fallback email+pass.
+  const [hotmailEmail, setHotmailEmail] = useState('');
+  const [hotmailPassword, setHotmailPassword] = useState('');
+  const [hotmailToken, setHotmailToken] = useState('');
+  // Ô DÁN 1 dòng tài khoản (nằm trên cookie) → tự tách & điền các trường cho kịch bản đang chọn.
+  const [pasted, setPasted] = useState('');
   const [label, setLabel] = useState('');
   const [proxy, setProxy] = useState('');
   const [verify, setVerify] = useState(true);
@@ -127,30 +140,93 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
     fn: () => Promise<{ ok: boolean; status: number; data: unknown }>,
     after?: () => void,
   ) => {
+    const label = ACTION_LABEL[name] ?? name;
     setBusy(name);
     setResult(null);
+    notify('info', `${label}: đang gửi lệnh…`); // mốc realtime: bắt đầu
     try {
       const r = await fn();
       // Lệnh THẤT BẠI vẫn trả HTTP 200 với body {ok:false} (vd login sai, GemLogin lỗi) → hiệu lực ok phải
       // xét CẢ ok cấp-lệnh trong body, không chỉ HTTP status (nếu không sẽ hiện "Thành công" oan).
       const bodyOk = r.data && typeof r.data === 'object' ? (r.data as { ok?: unknown }).ok : undefined;
+      const detail =
+        r.data && typeof r.data === 'object'
+          ? String((r.data as { detail?: unknown }).detail ?? '')
+          : '';
       const ok = r.ok && bodyOk !== false;
       setResult({ ok, status: r.status, name, data: r.data });
-      if (ok) after?.();
+      // Mốc realtime: kết quả (detail = kết luận có nghĩa: LOGGED_IN / blocked:captcha / otp_required:… — INV-1).
+      if (ok) {
+        notify('success', `${label}: ${detail || 'thành công'}`);
+        after?.();
+      } else {
+        notify('error', `${label}: ${detail || `thất bại (HTTP ${r.status || '—'})`}`);
+      }
     } catch (e) {
       setResult({ ok: false, status: 0, name, data: (e as Error).message });
+      notify('error', `${label}: ${(e as Error).message}`);
     } finally {
       setBusy(null);
     }
   };
 
-  const infoMode = method === 'INFO';
+  // Tách 1 dòng tài khoản đã dán → điền các trường cho kịch bản đang chọn (chỉ ghi đè trường TÁCH ĐƯỢC).
+  const handleParse = () => {
+    const line = pasted.trim();
+    if (!line) {
+      notify('warn', 'Dán 1 dòng tài khoản vào ô trước đã.');
+      return;
+    }
+    const p = parseAccountLine(line);
+    const filled: string[] = [];
+    if (p.username) {
+      setUsername(p.username);
+      filled.push('tài khoản');
+    }
+    if (p.password) {
+      setPassword(p.password);
+      filled.push('mật khẩu');
+    }
+    if (p.otpSecret) {
+      setOtp(p.otpSecret);
+      filled.push('2FA secret');
+    }
+    // @handle X cho bước "Confirm your account" = chính username (định danh) — chỉ dùng cho X.
+    if (p.username && platform === 'TWITTER') setConfirmUsername(p.username);
+    if (p.hotmailEmail) {
+      setHotmailEmail(p.hotmailEmail);
+      filled.push('email Hotmail');
+    }
+    if (p.hotmailPassword) {
+      setHotmailPassword(p.hotmailPassword);
+      filled.push('mật khẩu Hotmail');
+    }
+    if (p.hotmailToken) {
+      setHotmailToken(p.hotmailToken);
+      filled.push('token Microsoft');
+    }
+    if (p.cookie) {
+      setCookie(p.cookie);
+      filled.push('cookie');
+    }
+    notify(
+      filled.length ? 'success' : 'warn',
+      filled.length ? `Đã tách & điền: ${filled.join(', ')}.` : 'Không nhận ra trường nào từ dòng đã dán.',
+    );
+  };
+
+  const infoMode = loginKind === 'INFO';
+  const isX = platform === 'TWITTER';
+  // Nhánh USERPASS (X native user/pass/2FA + mã email Hotmail) — chỉ khi chọn X + "Tài khoản + mật khẩu".
+  const xUserpass = infoMode && isX && xVariant === 'USERPASS';
+  // Đăng nhập QUA GOOGLE: TikTok/YouTube (INFO) + X khi chọn nhánh Gmail.
+  const usesGoogle = infoMode && (GOOGLE_INFO_PLATFORMS.has(platform) || (isX && xVariant === 'GMAIL'));
+  // method GỬI xuống server (contract): COOKIE | INFO (Google) | USERPASS (X native).
+  const method: 'COOKIE' | 'INFO' | 'USERPASS' = loginKind === 'COOKIE' ? 'COOKIE' : xUserpass ? 'USERPASS' : 'INFO';
   const disabled = !!busy;
   const cookiePlatform = detectPlatformFromCookie(cookie);
   const cookieMismatch = cookiePlatform != null && cookiePlatform !== platform;
   const infoSupported = INFO_PLATFORMS.has(platform);
-  const infoViaGoogle = GOOGLE_INFO_PLATFORMS.has(platform); // TikTok/YouTube: INFO = tài khoản Google
-  const infoDirectX = platform === 'TWITTER'; // X: INFO = user/pass gốc trên x.com (+ @username confirm)
 
   return (
     <section className="card">
@@ -187,10 +263,56 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
         </div>
         <div className="field">
           <label>Phương thức login</label>
-          <select value={method} onChange={(e) => setMethod(e.target.value as 'COOKIE' | 'INFO')}>
+          <select value={loginKind} onChange={(e) => setLoginKind(e.target.value as 'COOKIE' | 'INFO')}>
             <option value="COOKIE">COOKIE (cả 4 nền tảng)</option>
-            <option value="INFO">INFO — X: user/pass · TikTok &amp; YouTube: tài khoản Google</option>
+            <option value="INFO">Đăng nhập bằng tài khoản (X · TikTok · YouTube)</option>
           </select>
+        </div>
+      </div>
+
+      {/* X có 2 cách đăng nhập bằng tài khoản: qua Gmail (Google) HOẶC tài khoản + mật khẩu X (native + 2FA). */}
+      {infoMode && isX && (
+        <div className="field">
+          <label>Đăng nhập X bằng</label>
+          <div className="seg-toggle" role="tablist" aria-label="Cách đăng nhập X">
+            <button
+              type="button"
+              className={xVariant === 'GMAIL' ? 'active' : ''}
+              aria-selected={xVariant === 'GMAIL'}
+              onClick={() => setXVariant('GMAIL')}
+            >
+              Gmail (Google)
+            </button>
+            <button
+              type="button"
+              className={xVariant === 'USERPASS' ? 'active' : ''}
+              aria-selected={xVariant === 'USERPASS'}
+              onClick={() => setXVariant('USERPASS')}
+            >
+              Tài khoản + mật khẩu (2FA)
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DÁN 1 dòng tài khoản (trên cookie) → tự PHÂN LOẠI token (email/cookie/secret 2FA/token MS/mật khẩu…)
+          và điền các trường cho kịch bản đang chọn. Chịu được thiếu trường / không đúng thứ tự. */}
+      <div className="field">
+        <label>Dán 1 dòng tài khoản (tự tách &amp; điền) — mỗi dòng = 1 tài khoản, ngăn cách bởi “|”</label>
+        <textarea
+          value={pasted}
+          onChange={(e) => setPasted(e.target.value)}
+          placeholder="vd: username | password | 2FA_SECRET | email@hotmail.com | hotmail_pass | M.C…$$ | uuid | cookie…"
+          style={{ minHeight: 64 }}
+        />
+        <div className="row" style={{ marginTop: 8 }}>
+          <button type="button" onClick={handleParse} disabled={disabled}>
+            Tách &amp; điền
+          </button>
+          <span className="card-hint">
+            Hệ thống tự nhận diện đâu là tài khoản/mật khẩu/secret 2FA/email+mật khẩu Hotmail/token/cookie, rồi
+            điền vào các ô bên dưới để bạn kiểm lại trước khi chạy.
+          </span>
         </div>
       </div>
 
@@ -212,29 +334,28 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
         )}
       </div>
 
-      {/* Đăng nhập bằng TÀI KHOẢN (INFO) — LUÔN hiện để dễ thấy; chỉ bật khi chọn Phương thức login = INFO. */}
+      {/* Đăng nhập bằng TÀI KHOẢN — LUÔN hiện để dễ thấy; chỉ bật khi Phương thức login = "Đăng nhập bằng tài khoản". */}
       <div className="field">
         <label>
-          Đăng nhập bằng tài khoản — X: user/pass gốc · TikTok &amp; YouTube: <b>tài khoản Google</b>
+          Đăng nhập bằng tài khoản — X: Gmail hoặc user/pass · TikTok &amp; YouTube: <b>tài khoản Google</b>
         </label>
         {!infoMode && (
           <div className="card-hint" style={{ marginBottom: 8 }}>
-            Muốn đăng nhập bằng user/mật khẩu? Đổi <b>Phương thức login = INFO</b> ở trên để bật các ô này.
+            Muốn đăng nhập bằng tài khoản? Đổi <b>Phương thức login = Đăng nhập bằng tài khoản</b> ở trên để bật các ô này.
           </div>
         )}
-        {infoMode && infoViaGoogle && (
+        {usesGoogle && (
           <div className="alert warn" style={{ marginBottom: 8 }}>
             ℹ️ <b>{platform}</b> đăng nhập qua <b>Google</b>: nhập <b>email + mật khẩu TÀI KHOẢN GOOGLE</b> (không phải
             mật khẩu {platform}). OTP secret chỉ cần nếu <b>tài khoản Google</b> bật 2FA. Lưu ý Google chặn browser
             tự động khá mạnh — cookie vẫn là cách ổn định nhất.
           </div>
         )}
-        {infoMode && infoDirectX && (
+        {xUserpass && (
           <div className="alert warn" style={{ marginBottom: 8 }}>
-            ℹ️ <b>X</b> đăng nhập trực tiếp trên x.com (luồng <b>passwordless</b>): <b>Tài khoản</b> ={' '}
-            email/SĐT/username đăng nhập → nếu X hỏi <b>"Confirm your account"</b> thì nhập <b>@username của X</b>{' '}
-            (ô riêng bên dưới) → xác thực bằng <b>OTP secret</b> (bắt buộc, tự gen mã 2FA). <b>Password</b> chỉ cần
-            như phương án dự phòng nếu X vẫn bắt nhập mật khẩu.
+            ℹ️ <b>X</b> đăng nhập bằng <b>username + mật khẩu + 2FA</b> trên x.com. Nếu X đòi <b>mã 6 số qua email</b>{' '}
+            ở bất kỳ bước nào, worker tự mở tab <b>Outlook</b> lấy mã (ưu tiên <b>token Microsoft</b>, fallback{' '}
+            <b>email + mật khẩu Hotmail</b>). Vượt 2FA mà không bị đòi mã email thì bỏ qua Hotmail.
           </div>
         )}
         {infoMode && !infoSupported && (
@@ -244,11 +365,17 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
         )}
         <div className="form-grid">
           <div>
-            <label>{infoDirectX ? 'Tài khoản (email/SĐT/username đăng nhập)' : 'Username (email tài khoản Google)'}</label>
+            <label>
+              {usesGoogle
+                ? 'Username (email tài khoản Google)'
+                : xUserpass
+                  ? 'Username X (định danh đăng nhập)'
+                  : 'Tài khoản (email/SĐT/username đăng nhập)'}
+            </label>
             <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" disabled={!infoMode} />
           </div>
           <div>
-            <label>Password</label>
+            <label>{usesGoogle ? 'Mật khẩu Google' : 'Password'}</label>
             <div className="pw-wrap">
               <input
                 type={showPw ? 'text' : 'password'}
@@ -270,19 +397,19 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
             </div>
           </div>
           <div>
-            <label>OTP secret (TOTP base32 — nếu bật 2FA)</label>
+            <label>OTP secret (TOTP base32{xUserpass ? ' — mã 2FA X' : ''})</label>
             <input
               value={otp}
               onChange={(e) => setOtp(e.target.value)}
-              placeholder="tuỳ chọn"
+              placeholder={xUserpass ? 'bắt buộc nếu tài khoản bật 2FA' : 'tuỳ chọn'}
               autoComplete="off"
               disabled={!infoMode}
             />
           </div>
-          {/* @username của X cho bước "Confirm your account" — CHỈ X (khác ô Tài khoản = email/định danh đăng nhập). */}
-          {infoDirectX && (
+          {/* @username của X cho bước "Confirm your account" — CHỈ X native (khác ô username = định danh đăng nhập). */}
+          {xUserpass && (
             <div>
-              <label>Username của X </label>
+              <label>@username của X (bước "Confirm your account")</label>
               <input
                 value={confirmUsername}
                 onChange={(e) => setConfirmUsername(e.target.value)}
@@ -294,6 +421,45 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           )}
         </div>
       </div>
+
+      {/* Hộp thư khôi phục (USERPASS/X) — lấy mã 6 số khi X đòi (LoginAcid). Token ưu tiên; fallback email+mật khẩu. */}
+      {xUserpass && (
+        <div className="field">
+          <label>
+            Hộp thư Hotmail để lấy mã xác minh email của X — <b>token ưu tiên</b>, fallback email + mật khẩu
+          </label>
+          <div className="form-grid">
+            <div>
+              <label>Email Hotmail</label>
+              <input
+                value={hotmailEmail}
+                onChange={(e) => setHotmailEmail(e.target.value)}
+                placeholder="vd ...@hotmail.com"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <label>Mật khẩu Hotmail</label>
+              <input
+                type={showPw ? 'text' : 'password'}
+                value={hotmailPassword}
+                onChange={(e) => setHotmailPassword(e.target.value)}
+                placeholder="fallback nếu token chết"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <label>Microsoft auth token (M.C…$$)</label>
+              <input
+                value={hotmailToken}
+                onChange={(e) => setHotmailToken(e.target.value)}
+                placeholder="ưu tiên — inject để vào thẳng hộp thư"
+                autoComplete="off"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="form-grid">
         <div className="field">
@@ -318,7 +484,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           disabled={disabled || !sid}
           onClick={() =>
             void act('create-profile', () =>
-              sendJson('POST', `${ORCH_BASE}/stations/${sid}/profiles`, {
+              postJson(`${ORCH_BASE}/stations/${sid}/profiles`, {
                 platform,
                 account_label: label || `fastcheck-${platform}`,
                 proxy: proxy || undefined,
@@ -332,7 +498,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           disabled={disabled || !sid || !gemId}
           onClick={() =>
             void act('open-browser', () =>
-              sendJson('POST', `${ORCH_BASE}/stations/${sid}/browser/open`, { gemlogin_profile_id: gemId }),
+              postJson(`${ORCH_BASE}/stations/${sid}/browser/open`, { gemlogin_profile_id: gemId }),
             )
           }
         >
@@ -342,7 +508,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           disabled={disabled || !sid || !gemId}
           onClick={() =>
             void act('close-browser', () =>
-              sendJson('POST', `${ORCH_BASE}/stations/${sid}/browser/close`, { gemlogin_profile_id: gemId }),
+              postJson(`${ORCH_BASE}/stations/${sid}/browser/close`, { gemlogin_profile_id: gemId }),
             )
           }
         >
@@ -352,7 +518,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
           disabled={disabled || !sid || !gemId}
           onClick={() =>
             void act('run-login', () =>
-              sendJson('POST', `${ORCH_BASE}/stations/${sid}/login`, {
+              postJson(`${ORCH_BASE}/stations/${sid}/login`, {
                 gemlogin_profile_id: gemId,
                 platform,
                 method,
@@ -361,6 +527,10 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
                 password: password || undefined,
                 otp_secret: otp || undefined,
                 confirm_username: confirmUsername || undefined,
+                // USERPASS (X): hộp thư khôi phục lấy mã email khi X đòi (LoginAcid). KHÔNG log (INV-12).
+                hotmail_email: hotmailEmail || undefined,
+                hotmail_password: hotmailPassword || undefined,
+                hotmail_token: hotmailToken || undefined,
               }),
             )
           }
@@ -374,7 +544,7 @@ export function AccountControls({ onRegistered }: { onRegistered?: () => void })
             void act(
               'register-account',
               () =>
-                sendJson('POST', `${ORCH_BASE}/accounts`, {
+                postJson(`${ORCH_BASE}/accounts`, {
                   platform,
                   gemlogin_profile_id: gemId,
                   station_id: sid || undefined,

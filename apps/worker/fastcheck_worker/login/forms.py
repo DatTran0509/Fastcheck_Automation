@@ -94,10 +94,15 @@ TWITTER_LOGIN = LoginFormSpec(
     # (màn OTP knowledge_check của X). Click theo text CHÍNH XÁC nên liệt kê nhiều nhãn là an toàn (chỉ nhãn
     # khớp đúng mới được click), né nút social "Continue with ...".
     submit_texts=("Log in", "Đăng nhập", "Next", "Continue", "Tiếp theo", "Tiếp tục"),
-    # CHỈ selector CÓ inputmode="numeric": testid OCF gốc (`ocfEnterTextTextInput`) dùng CHUNG cho cả bước
-    # "confirm your identity" (challenge — đã có trong block_selectors của detector) lẫn bước nhập mã 2FA,
-    # không tự phân biệt được. inputmode="numeric" là tín hiệu ĐÚNG riêng cho "đây là OTP" (INV-7/INV-1).
-    otp_selectors=('input[name="text"][inputmode="numeric"]',),
+    # Ô nhập MÃ (2FA authenticator VÀ mã 6 số qua email — LoginAcid). Xác nhận từ DOM thật (DIAG màn
+    # `#/s/two_factor_code`): X dùng `input[autocomplete="one-time-code"] inputmode="numeric"` (KHÔNG có
+    # name="text") → đặt selector này TRƯỚC. Giữ biến thể OCF `name="text"[inputmode=numeric]` làm fallback cho
+    # các phiên bản trang cũ. Cả 2 màn (2FA/email) dùng chung ô này → _classify tách bằng TEXT (INV-8), không
+    # bằng selector. inputmode="numeric"/one-time-code là tín hiệu "đây là OTP", tách khỏi ô challenge chữ.
+    otp_selectors=(
+        'input[autocomplete="one-time-code"]',
+        'input[name="text"][inputmode="numeric"]',
+    ),
     error_selectors=('[data-testid="LoginForm_Login_Button"][aria-disabled="true"]',),
     supports_info=True,
     # Đăng nhập qua GOOGLE (tài khoản đăng nhập X là tài khoản Google — "Continue with Google" trên landing

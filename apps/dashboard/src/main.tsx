@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { App } from './App.js';
+import { NotificationProvider } from './lib/notifications.js';
 import { SnapshotProvider } from './lib/snapshot.js';
 import './styles.css';
 
@@ -10,9 +11,11 @@ if (!root) throw new Error('#root không tồn tại');
 createRoot(root).render(
   <StrictMode>
     <BrowserRouter>
-      <SnapshotProvider>
-        <App />
-      </SnapshotProvider>
+      <NotificationProvider>
+        <SnapshotProvider>
+          <App />
+        </SnapshotProvider>
+      </NotificationProvider>
     </BrowserRouter>
   </StrictMode>,
 );
